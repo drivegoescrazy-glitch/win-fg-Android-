@@ -62,6 +62,10 @@ namespace {
 // the next start. Without this the only evidence of a renderer crash is a vanished
 // notification, because the process (and the foreground service) dies with it.
 char g_crashPath[256];
+// ZeroFG's crash-loop guard. The marker is written BEFORE its creation and
+// cleared after success, so a process that died inside the driver leaves
+// "pending" behind and the next launch skips ZeroFG instead of dying again.
+char g_zfgStatePath[256];
 std::atomic<bool> g_crashHandlerInstalled{false};
 /** Names the renderer stage in progress; written into the next crash report. */
 const char* volatile g_stage = "startup";
@@ -144,12 +148,32 @@ void nativeCrashHandler(int sig, siginfo_t* info, void* rawContext) {
 void installSignalHandlers(const char* dir) {
     if (g_crashHandlerInstalled.exchange(true)) return;
     snprintf(g_crashPath, sizeof g_crashPath, "%s/native_crash.log", dir);
+    snprintf(g_zfgStatePath, sizeof g_zfgStatePath, "%s/zerofg.state", dir);
     struct sigaction sa {};
     sa.sa_sigaction = nativeCrashHandler;
     sa.sa_flags = SA_SIGINFO | SA_RESETHAND | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
     for (int sig : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT}) sigaction(sig, &sa, nullptr);
     LOGI("native crash handler armed at %s", g_crashPath);
+}
+
+bool zfgStatePending() {
+    if (g_zfgStatePath[0] == 0) return false;
+    int fd = open(g_zfgStatePath, O_RDONLY);
+    if (fd < 0) return false;
+    char buf[16] = {};
+    ssize_t n = read(fd, buf, sizeof buf - 1);
+    close(fd);
+    return n > 0 && std::strncmp(buf, "pending", 7) == 0;
+}
+
+void zfgWriteState(const char* s) {
+    if (g_zfgStatePath[0] == 0) return;
+    int fd = open(g_zfgStatePath, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) return;
+    const size_t len = std::strlen(s);
+    if (write(fd, s, len) != (ssize_t)len) { /* best effort */ }
+    close(fd);
 }
 
 // ZeroFG's independent contexts: a frame context may not be reused until the
@@ -540,27 +564,42 @@ bool Renderer::createZeroFg() {
         return false;
     }
 
+    // A previous run died during this call (issue #2). Do not walk into it
+    // again: one crash is a bug report, a crash loop makes the app unusable.
+    if (cfg_.zerofgMode != 1 && zfgStatePending()) {
+        LOGW("ZeroFG crashed during a previous init (marker present) — skipped "
+             "this run; built-in engine generating. force with zerofg=on");
+        zfgWriteState("failed");
+        return false;
+    }
+
     zerofg::CreateInfo info;
     info.vulkan.instance = instance_;
     info.vulkan.physical_device = physical_;
     info.vulkan.device = device_;
     info.vulkan.get_instance_proc_addr = vkGetInstanceProcAddr;
     info.mode = zerofg::Mode::kZero;         // the 1.2 engine
-    info.backend = zerofg::Backend::kAuto;   // the device's fast paths
+    // kCompat first: no optional feature, no device fast paths, same logical
+    // result. The crash in issue #2 was inside libllvm-qgl.so's compile path,
+    // so the smaller feature surface is the one worth trying first on a driver
+    // that has already faulted once. kAuto is the fallback, not the entry point.
+    info.backend = zerofg::Backend::kCompat;
     info.frame_context_count = kZfgContexts;
     info.capabilities.effective_api_version = deviceApi_;
     info.capabilities.synchronization2_enabled = true;
     info.capabilities.shader_storage_image_extended_formats_enabled = ssief_;
 
+    zfgWriteState("pending");   // cleared only after a successful Resize
+
     zerofg::Status st = zerofg::Status::kSuccess;
     zfg_ = zerofg::Interpolator::Create(info, &st);
     if (!zfg_) {
-        // The portable form uses no optional feature; same logical result.
-        info.backend = zerofg::Backend::kCompat;
+        info.backend = zerofg::Backend::kAuto;
         zfg_ = zerofg::Interpolator::Create(info, &st);
     }
     if (!zfg_) {
         LOGW("ZeroFG unavailable (status %d) — using the built-in engine", (int)st);
+        zfgWriteState("failed");
         return false;
     }
     st = zfg_->Resize(extent_.width, extent_.height,
@@ -569,8 +608,10 @@ bool Renderer::createZeroFg() {
         LOGW("ZeroFG resize failed at %ux%u (status %d) — built-in engine",
              extent_.width, extent_.height, (int)st);
         zfg_.reset();
+        zfgWriteState("failed");
         return false;
     }
+    zfgWriteState("ok");
     zfgSeq_ = 1;
     zfgCtx_ = 0;
     zfgReady_ = true;
@@ -740,8 +781,13 @@ bool Renderer::createOffscreen() {
                                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     if (!makeImage(prev_, extent_, VK_FORMAT_R8G8B8A8_UNORM, sampled)) return false;
     if (!makeImage(curr_, extent_, VK_FORMAT_R8G8B8A8_UNORM, sampled)) return false;
+    // TRANSFER_DST is not optional for ZeroFG: it writes A2B10G10R10 directly,
+    // but any other output format (this one is RGBA8) goes through its internal
+    // image and is then blitted, which requires BLIT_DST support and
+    // TRANSFER_DST usage on the destination. Without it the blit is undefined.
     if (!makeImage(generated_, extent_, VK_FORMAT_R8G8B8A8_UNORM,
-                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                   VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
         return false;
     }
     prevValid_ = false;
@@ -775,6 +821,7 @@ void Renderer::resize(int width, int height) {
     if (fgReady_) fg_.onResize(extent_, VK_FORMAT_R8G8B8A8_UNORM, true);
     createOffscreen();
     if (zfg_) {
+        zfgWriteState("pending");   // a resize is the other place it can die
         zerofg::Status st = zfg_->Resize(extent_.width, extent_.height,
                                          VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM);
         if (st != zerofg::Status::kSuccess) {
@@ -782,6 +829,9 @@ void Renderer::resize(int width, int height) {
                  extent_.width, extent_.height, (int)st);
             zfg_.reset();
             zfgReady_ = false;
+            zfgWriteState("failed");
+        } else {
+            zfgWriteState("ok");
         }
     }
 }
@@ -1338,6 +1388,14 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
 void Renderer::destroy() {
     stage("renderer destroy");
     if (device_) vkDeviceWaitIdle(device_);
+    // BEFORE the device goes away. zfg_ is a unique_ptr member, so its
+    // destructor runs when the Renderer object is deleted — which is after this
+    // function has destroyed the VkDevice, making every vkDestroy* inside it a
+    // call on a dead device. Reset it here, while the device is still alive.
+    if (zfg_) {
+        zfg_.reset();
+        zfgReady_ = false;
+    }
     if (fgReady_) {
         fg_.destroy();
         fgReady_ = false;

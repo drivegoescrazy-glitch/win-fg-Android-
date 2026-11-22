@@ -96,13 +96,16 @@ struct Config {
     // pipeline differs, so this is a live A/B switch.
     // WIN_FG_SYNTH=interpolate|reproject  /  conf.toml synth=interpolate|reproject.
     int      synthMode   = 0;
-    // ZeroFG BACKEND. 0 = auto (on where the device qualifies), 1 = on,
-    // 2 = off. Default is OFF because creating it crashed an Adreno 740 inside
-    // libllvm-qgl.so (GitHub issue #2: signal 11, stage "ZeroFG init") even
-    // though the session before it generated 1.99x correctly. A driver that
-    // faults cannot be caught in-process, so it is opt-in until the fault is
-    // understood: conf.toml `zerofg = on`  /  WIN_FG_ZEROFG=on.
-    int      zerofgMode  = 2;
+    // ZeroFG BACKEND. 0 = auto (use it wherever the device qualifies), 1 = on
+    // (force, ignoring the crash marker), 2 = off.
+    //
+    // Auto relies on the renderer's crash-loop guard: it writes
+    // files/win-fg/zerofg.state = "pending" before creating or resizing ZeroFG
+    // and clears it on success, so a process that died inside the driver leaves
+    // the marker and every later launch skips ZeroFG instead of dying again.
+    // That bounds the Adreno fault from issue #2 to at most one start per app
+    // data, and keeps the better engine available on drivers that survive it.
+    int      zerofgMode  = 0;
     int      frIters     = 4;      // TV-L1 iterations at kFlowFinest (0 ⇒ off)
     float    frLambda    = 2.0f;   // L1 data-fidelity weight (higher ⇒ trust SAD flow)
     float    frDt        = 0.25f;  // semi-implicit smoothing step (higher ⇒ smoother)
