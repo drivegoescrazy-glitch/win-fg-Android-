@@ -1,11 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.winfg.launcher"
-    android:versionCode="1"
-    android:versionName="1.0"
+    android:versionCode="2"
+    android:versionName="1.1"
     android:installLocation="auto">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
+
+    <!-- No-root overlay mode: draw over games and capture the display with the
+         user's MediaProjection consent. No root or system layer is required. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- Needed to list launchable games on Android 11+. We never request
          QUERY_ALL_PACKAGES; only apps that expose a launcher activity match. -->
@@ -23,6 +30,7 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:hardwareAccelerated="true"
+        android:extractNativeLibs="true"
         android:theme="@style/AppTheme">
 
         <activity
@@ -36,5 +44,10 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".OverlayService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
     </application>
 </manifest>

@@ -1,5 +1,6 @@
 package com.winfg.launcher;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ActivityNotFoundException;
@@ -9,10 +10,14 @@ import android.content.pm.ActivityInfo;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.media.projection.MediaProjectionConfig;
+import android.media.projection.MediaProjectionManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.view.View;
@@ -39,6 +44,9 @@ import java.util.concurrent.Executors;
 public final class MainActivity extends Activity {
     private static final int REQ_HOST_TREE = 100;
     private static final int REQ_EXPORT_CONF = 101;
+    private static final int REQ_OVERLAY_PERMISSION = 102;
+    private static final int REQ_CAPTURE = 103;
+    private static final int REQ_NOTIFICATIONS = 104;
 
     private AppSettings settings;
     private final List<GameEntry> allGames = new ArrayList<>();
@@ -52,6 +60,10 @@ public final class MainActivity extends Activity {
     private TextView engineStatus, engineVersion, engineProfile, engineSha, engineHostPath;
 
     private boolean binding;
+    private GameEntry pendingGame;
+    private Switch overlaySwitch;
+    private TextView overlayStatus;
+    private Button overlayNow;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Runnable profileWriter =
@@ -184,6 +196,14 @@ public final class MainActivity extends Activity {
     }
 
     private void launchGame(GameEntry g) {
+        if (settings.overlay && settings.enabled && !OverlayService.isRunning()) {
+            beginOverlay(g);
+            return;
+        }
+        launchGameDirect(g);
+    }
+
+    private void launchGameDirect(GameEntry g) {
         try {
             settings.save(this);
             EngineManager.writeProfile(this, settings);
@@ -195,10 +215,70 @@ public final class MainActivity extends Activity {
             i.putExtra("winfg.multiplier", settings.multiplier);
             i.putExtra("winfg.model", settings.model);
             startActivity(i);
-            toast("Win-FG profile applied · " + settings.summary());
+            toast(OverlayService.isRunning()
+                    ? "Win-FG overlay active · " + settings.summary()
+                    : "Win-FG profile applied · " + settings.summary());
         } catch (Exception e) {
             toast("Could not launch " + g.label);
         }
+    }
+
+    /** Starts the opt-in no-root capture overlay before launching {@code g}. */
+    private void beginOverlay(GameEntry g) {
+        pendingGame = g;
+        if (!settings.enabled) {
+            toast("Enable frame generation first");
+            pendingGame = null;
+            return;
+        }
+        if (Build.VERSION.SDK_INT < 29) {
+            toast("No-root overlay requires Android 10 or newer");
+            pendingGame = null;
+            return;
+        }
+        if (!Settings.canDrawOverlays(this)) {
+            toast("Grant display-over-other-apps for the overlay");
+            try {
+                startActivityForResult(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:" + getPackageName())), REQ_OVERLAY_PERMISSION);
+            } catch (Exception e) {
+                toast("Overlay permission screen unavailable");
+                finishPendingLaunch();
+            }
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIFICATIONS);
+            return;
+        }
+        requestCapture();
+    }
+
+    private void requestCapture() {
+        try {
+            MediaProjectionManager mpm =
+                    (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
+            if (mpm == null) throw new IllegalStateException("no MediaProjectionManager");
+            // The overlay must capture the whole display: the game is a different
+            // app, and Android 14's single-app sharing would capture this launcher
+            // instead. createConfigForDefaultDisplay() explicitly opts out of
+            // app-only sharing while still requiring user consent.
+            Intent intent = Build.VERSION.SDK_INT >= 34
+                    ? Api34.captureDefaultDisplay(mpm)
+                    : mpm.createScreenCaptureIntent();
+            startActivityForResult(intent, REQ_CAPTURE);
+        } catch (Exception e) {
+            toast("Screen-capture permission unavailable");
+            finishPendingLaunch();
+        }
+    }
+
+    private void finishPendingLaunch() {
+        GameEntry g = pendingGame;
+        pendingGame = null;
+        if (g != null) launchGameDirect(g);
     }
 
     // ── Settings ─────────────────────────────────────────────────────────────
@@ -376,6 +456,7 @@ public final class MainActivity extends Activity {
         ((Switch) f(R.id.sw_enabled)).setChecked(settings.enabled);
         ((Switch) f(R.id.sw_pacing)).setChecked(settings.pacing);
         ((Switch) f(R.id.sw_debug)).setChecked(settings.debug);
+        if (overlaySwitch != null) overlaySwitch.setChecked(settings.overlay);
 
         ((Spinner) f(R.id.spinner_preset)).setSelection(settings.perfPreset, false);
         ((Spinner) f(R.id.spinner_gm)).setSelection(settings.gmMode, false);
@@ -416,6 +497,30 @@ public final class MainActivity extends Activity {
             adapter.notifyDataSetChanged();
         }
         refreshNotice();
+        updateOverlayUi();
+    }
+
+    private void updateOverlayUi() {
+        if (overlayStatus == null) return;
+        boolean running = OverlayService.isRunning();
+        if (running) {
+            overlayStatus.setText("ACTIVE · screen capture + overlay · stop from the notification");
+            overlayStatus.setTextColor(getColor(R.color.accent));
+        } else if (Build.VERSION.SDK_INT < 29) {
+            overlayStatus.setText("Unavailable · requires Android 10 or newer");
+            overlayStatus.setTextColor(getColor(R.color.muted));
+        } else if (!Settings.canDrawOverlays(this)) {
+            overlayStatus.setText("Overlay permission not granted · you will be prompted on first launch");
+            overlayStatus.setTextColor(getColor(R.color.muted));
+        } else {
+            overlayStatus.setText(settings.overlay
+                    ? "Ready · starts when you launch a game"
+                    : "Disabled · turn on the switch or use START OVERLAY NOW");
+            overlayStatus.setTextColor(getColor(R.color.muted));
+        }
+        if (overlayNow != null) {
+            overlayNow.setText(running ? "STOP OVERLAY" : "START OVERLAY NOW");
+        }
     }
 
     private void onSettingChanged() {
@@ -437,6 +542,24 @@ public final class MainActivity extends Activity {
         engineSha.setText("SHA-256: " + EngineManager.signingSha256(this));
         engineVersion.setText("Win-FG " + AppInfo.VERSION_NAME);
 
+        overlayStatus = f(R.id.overlay_status);
+        overlaySwitch = f(R.id.sw_overlay);
+        overlayNow = f(R.id.btn_overlay_now);
+        overlaySwitch.setOnCheckedChangeListener((b, v) -> {
+            if (binding) return;
+            settings.overlay = v;
+            settings.save(this);
+            updateOverlayUi();
+        });
+        overlayNow.setOnClickListener(v -> {
+            if (OverlayService.isRunning()) {
+                OverlayService.stop(this);
+                ui.postDelayed(this::updateOverlayUi, 300);
+            } else {
+                beginOverlay(null);
+            }
+        });
+
         f(R.id.btn_install).setOnClickListener(v -> confirmInstall());
         f(R.id.btn_remove).setOnClickListener(v -> confirmRemove());
         f(R.id.btn_check).setOnClickListener(v -> checkStatus());
@@ -447,6 +570,7 @@ public final class MainActivity extends Activity {
         refreshEngineInfo();
         refreshHostLabel();
         refreshNotice();
+        updateOverlayUi();
     }
 
     private void refreshEngineInfo() {
@@ -580,6 +704,34 @@ public final class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
+
+        if (requestCode == REQ_OVERLAY_PERMISSION) {
+            if (Settings.canDrawOverlays(this)) {
+                beginOverlay(pendingGame);
+            } else {
+                toast("Overlay permission is required for no-root mode");
+                finishPendingLaunch();
+            }
+            return;
+        }
+        if (requestCode == REQ_CAPTURE) {
+            if (resultCode == RESULT_OK && data != null) {
+                OverlayService.start(this, resultCode, data);
+                if (pendingGame != null) {
+                    GameEntry g = pendingGame;
+                    pendingGame = null;
+                    ui.postDelayed(() -> launchGameDirect(g), 600);
+                } else {
+                    toast("Overlay starting — stop it from the notification");
+                    ui.postDelayed(this::updateOverlayUi, 600);
+                }
+            } else {
+                toast("Screen capture denied — launching without overlay");
+                finishPendingLaunch();
+            }
+            return;
+        }
+
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
 
         if (requestCode == REQ_HOST_TREE) {
@@ -609,6 +761,22 @@ public final class MainActivity extends Activity {
                 toast("Export failed");
             }
         }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_NOTIFICATIONS) {
+            // The foreground service still runs without a visible notification;
+            // continue to the screen-capture consent prompt either way.
+            requestCapture();
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        updateOverlayUi();
     }
 
     private void refreshNotice() {
@@ -645,6 +813,14 @@ public final class MainActivity extends Activity {
         ui.removeCallbacksAndMessages(null);
         io.shutdownNow();
         super.onDestroy();
+    }
+
+    /** Kept in a separate class so API 34 types are never resolved on older devices. */
+    private static final class Api34 {
+        static Intent captureDefaultDisplay(MediaProjectionManager mpm) {
+            return mpm.createScreenCaptureIntent(
+                    MediaProjectionConfig.createConfigForDefaultDisplay());
+        }
     }
 
     private abstract static class Seek implements SeekBar.OnSeekBarChangeListener {

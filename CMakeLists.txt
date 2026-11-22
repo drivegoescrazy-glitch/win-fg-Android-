@@ -35,4 +35,19 @@ set_target_properties(win_fg PROPERTIES OUTPUT_NAME win_fg)
 if(ANDROID)
   find_library(log-lib log)
   target_link_libraries(win_fg ${log-lib})
+
+  # No-root screen-capture overlay. This is a standalone Vulkan renderer that
+  # reuses FrameGen directly (no Vulkan layer injection), so it can run in this
+  # app's own process on an unrooted device.
+  add_library(winfg_overlay SHARED src/overlay_renderer.cpp src/framegen.cpp
+              ${CMAKE_BINARY_DIR}/version_stamp.cpp)
+  target_include_directories(winfg_overlay PRIVATE src ${VULKAN_INCLUDE})
+  target_compile_definitions(winfg_overlay PRIVATE VK_USE_PLATFORM_ANDROID_KHR)
+  set_target_properties(winfg_overlay PROPERTIES OUTPUT_NAME winfg_overlay)
+  find_library(android-lib android)
+  find_library(nativewindow-lib nativewindow)
+  find_library(vulkan-lib vulkan)
+  find_library(log-lib log)
+  target_link_libraries(winfg_overlay ${android-lib} ${nativewindow-lib}
+                        ${vulkan-lib} ${log-lib})
 endif()

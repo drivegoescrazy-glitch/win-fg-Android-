@@ -52,11 +52,13 @@ echo "[apk] building native layer ($DESC)"
 "$CMAKE" -S "$ROOT" -B "$NATIVE_BUILD" -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 \
+  -DANDROID_STL=c++_static \
   -DCMAKE_BUILD_TYPE=Release \
   -DWINFG_GIT_DESCRIBE="$DESC" \
   -DVULKAN_INCLUDE="$VULKAN_INCLUDE"
-"$CMAKE" --build "$NATIVE_BUILD" --target win_fg
+"$CMAKE" --build "$NATIVE_BUILD" --target win_fg winfg_overlay
 [ -f "$NATIVE_BUILD/libwin_fg.so" ] || { echo "libwin_fg.so not produced"; exit 1; }
+[ -f "$NATIVE_BUILD/libwinfg_overlay.so" ] || { echo "libwinfg_overlay.so not produced"; exit 1; }
 
 ASSETS="$APP/assets/win-fg"
 mkdir -p "$ASSETS"
@@ -93,6 +95,12 @@ echo "[apk] dexing"
   $(find "$BUILD/classes" -name '*.class' -print)
 cp "$BUILD/dex/classes.dex" "$BUILD/classes.dex"
 ( cd "$BUILD" && zip -q -X unsigned.apk classes.dex )
+
+# Native overlay renderer. It is a normal app JNI library, not a Vulkan layer,
+# so the no-root MediaProjection path does not need system-wide injection.
+mkdir -p "$BUILD/lib/arm64-v8a"
+cp "$NATIVE_BUILD/libwinfg_overlay.so" "$BUILD/lib/arm64-v8a/libwinfg_overlay.so"
+( cd "$BUILD" && zip -q -X unsigned.apk lib/arm64-v8a/libwinfg_overlay.so )
 
 # ── align + sign with the persistent update key ─────────────────────────────
 KEYSTORE="$ANDROID_DIR/keys/winfg-release.jks"

@@ -30,6 +30,50 @@
             android:layout_marginTop="12dp"
             android:layout_marginBottom="12dp">
 
+            <TextView style="@style/SectionLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="NO-ROOT OVERLAY (BETA)" />
+
+            <TextView
+                android:id="@+id/overlay_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Ready — starts when you launch a game"
+                android:textColor="@color/muted"
+                android:textSize="11sp" />
+
+            <Switch
+                android:id="@+id/sw_overlay"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="Start overlay when launching a game"
+                android:textColor="@color/text"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/btn_overlay_now"
+                style="@style/SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:layout_marginTop="8dp"
+                android:text="START OVERLAY NOW" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="Captures the screen with MediaProjection and composites generated frames in a full-screen overlay. No root required. The overlay is excluded from capture through SurfaceFlinger's skip-screenshot flag (Android 10+); if the OEM blocks that flag, the overlay refuses to start instead of recording itself. Overlay mode currently inserts one generated frame (2×); the system-layer path honors 3×/4×. Adds roughly 50–80 ms of latency; secure/DRM apps show black; a display with refresh headroom is required to see extra frames. Stop it from the notification."
+                android:textColor="@color/muted"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginBottom="12dp">
+
             <TextView style="@style/SectionLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="BUNDLED ENGINE" />
 
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingBottom="8dp">
@@ -39,7 +83,7 @@
 
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingBottom="8dp">
                 <TextView android:layout_width="110dp" android:layout_height="wrap_content" android:text="Version" android:textColor="@color/muted" android:textSize="12sp" />
-                <TextView android:id="@+id/engine_version" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Win-FG v1.0" android:textColor="@color/text" android:textSize="12sp" />
+                <TextView android:id="@+id/engine_version" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Win-FG v1.1" android:textColor="@color/text" android:textSize="12sp" />
             </LinearLayout>
 
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingBottom="8dp">
@@ -163,7 +207,7 @@
                 android:id="@+id/update_version"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="You are on v1.0. Release builds keep the same update key, so newer APKs install straight over this one."
+                android:text="You are on v1.1. Release builds keep the same update key, so newer APKs install straight over this one."
                 android:textColor="@color/muted"
                 android:textSize="11sp" />
 

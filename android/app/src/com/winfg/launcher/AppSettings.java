@@ -24,6 +24,7 @@ public final class AppSettings {
     public float frEdge = 8.0f;
     public float frEps = 0.05f;
     public int extraImages = 2;
+    public boolean overlay = false;   // no-root MediaProjection + system-overlay mode
 
     public static AppSettings load(Context c) {
         SharedPreferences p = c.getSharedPreferences(PREF, Context.MODE_PRIVATE);
@@ -43,6 +44,7 @@ public final class AppSettings {
         s.frEdge = p.getFloat("fr_edge", s.frEdge);
         s.frEps = p.getFloat("fr_eps", s.frEps);
         s.extraImages = p.getInt("extra_images", s.extraImages);
+        s.overlay = p.getBoolean("overlay", s.overlay);
         return s;
     }
 
@@ -63,6 +65,7 @@ public final class AppSettings {
                 .putFloat("fr_edge", frEdge)
                 .putFloat("fr_eps", frEps)
                 .putInt("extra_images", extraImages)
+                .putBoolean("overlay", overlay)
                 .apply();
     }
 
