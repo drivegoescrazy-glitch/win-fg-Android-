@@ -1269,8 +1269,15 @@ Java_com_winfg_launcher_OverlayRenderer_nativeCreate(
     // The overlay therefore always runs the cheapest flow level, caps the TV-L1
     // iterations, and keeps the cheap reprojection synthesis. The Winlator layer
     // path is untouched and still honours the full profile.
-    cfg.perfPreset = 2;                 // flow solved at 1/8 resolution
-    if (cfg.frIters > 2) cfg.frIters = 2;
+    // 1/4-resolution flow, as Lemon Project's built-in Switch-emulator frame gen
+    // documents doing on Adreno ("a 1/4-resolution motion search and a warp in
+    // Vulkan compute that insert generated frames between the real ones, with HUD
+    // and the followed character kept in place"). 1/8 was chosen here back in 1.19
+    // purely to buy budget, and it is why thin detail smears: at 135x60 a 2 px
+    // object motion is a third of a search cell. One TV-L1 iteration keeps the
+    // added cost near the old 1/8 x2 configuration.
+    cfg.perfPreset = 1;                 // flow solved at 1/4 resolution
+    if (cfg.frIters > 1) cfg.frIters = 1;
     // C1 global-motion prewarp stays ON. It was disabled here to buy frame budget,
     // but GameSir's own write-up of GSFG 1.1 names fast camera turns and large
     // character motion as the hardest cases — and camera motion is exactly what C1
