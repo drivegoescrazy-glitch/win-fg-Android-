@@ -123,6 +123,9 @@ public final class OverlayService extends Service {
     private long lastPresentMs;
     private long lastStatusMs;
     private int lastFps;
+    private int lastBaseFps;
+    private long captureWindowStart;
+    private int captureWindowFrames;
     private int rendererRecoveries;
     private long lastRendererRecoveryMs;
     private int captureRestarts;
@@ -679,6 +682,12 @@ public final class OverlayService extends Service {
         if (elapsed < 1000) return;
         int fps = (int) (hudFrames * 1000 / Math.max(1, elapsed));
         lastFps = fps;
+        long capElapsed = now - captureWindowStart;
+        if (captureWindowStart != 0 && capElapsed >= 500) {
+            lastBaseFps = (int) (captureWindowFrames * 1000 / Math.max(1, capElapsed));
+            captureWindowFrames = 0;
+            captureWindowStart = now;
+        }
         hudFrames = 0;
         hudWindowStart = now;
         main.post(() -> {
@@ -774,8 +783,11 @@ public final class OverlayService extends Service {
             if (lastCaptureMs == 0) {
                 status = "waiting for the first captured frame";
             } else if (sinceCapture < 3000) {
-                status = lastFps + " fps" + (settings != null && settings.mirrorOnly
-                        ? " · mirror only" : " · 2x");
+                // base = what the game actually renders, out = what the panel gets.
+                // Seeing both is the only way to tell frame generation apart from a
+                // game that happens to run at the display rate.
+                status = lastBaseFps + " → " + lastFps + " fps"
+                        + (settings != null && settings.mirrorOnly ? " · mirror only" : "");
             } else {
                 status = "no new frames for " + (sinceCapture / 1000) + " s";
             }
@@ -1035,6 +1047,8 @@ public final class OverlayService extends Service {
                         + " usage=0x" + Long.toHexString(usage));
             }
             lastCaptureMs = android.os.SystemClock.elapsedRealtime();
+            if (captureWindowStart == 0) captureWindowStart = lastCaptureMs;
+            captureWindowFrames++;
             int presented;
             synchronized (rendererLock) {
                 presented = renderer == null ? 0 : renderer.submit(buffer, image.getTimestamp());

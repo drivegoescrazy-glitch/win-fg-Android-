@@ -24,8 +24,13 @@ public final class AppSettings {
     public float frEdge = 8.0f;
     public float frEps = 0.05f;
     public int extraImages = 2;
-    /** Synthesis back end: 0 = importance blend of both warped frames, 1 = reprojection. */
-    public int synthMode = 0;
+    /**
+     * Synthesis back end: 0 = importance blend of both warped frames, 1 = reprojection.
+     * Reprojection is the default because it cannot double an edge on a disocclusion or a
+     * bad vector, which is the artifact class users describe as the image "looking like
+     * water". Interpolate is one tap away for anyone who prefers it.
+     */
+    public int synthMode = 1;
     public boolean overlay = true;    // legacy preference; overlay now starts automatically
     /** Capture-only overlay, used after the frame-generation renderer crashed natively. */
     public boolean mirrorOnly = false;

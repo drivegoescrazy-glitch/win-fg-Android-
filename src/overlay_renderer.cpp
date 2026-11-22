@@ -29,6 +29,7 @@
 #include "vk_dispatch.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <csignal>
 #include <cstdint>
@@ -209,6 +210,10 @@ private:
     bool dead_ = false;
     float refreshHz_ = 60.0f;
     uint64_t lastCaptureNs_ = 0;
+    // Renderer-side clock, used when the capture timestamps are unusable (some
+    // producers repeat or reset them). Without this fallback the insert decision
+    // below can never pass and the overlay keeps showing the game's own rate.
+    uint64_t lastHostNs_ = 0;
     uint64_t presented_ = 0;
 
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
@@ -858,6 +863,17 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     uint64_t deltaNs = (lastCaptureNs_ != 0 && timestampNs > lastCaptureNs_)
             ? timestampNs - lastCaptureNs_ : 0;
     lastCaptureNs_ = timestampNs;
+    {
+        const uint64_t nowHost = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch()).count());
+        const uint64_t hostDelta = (lastHostNs_ != 0 && nowHost > lastHostNs_)
+                ? nowHost - lastHostNs_ : 0;
+        lastHostNs_ = nowHost;
+        // A missing, duplicated or absurd producer timestamp must not disable
+        // interpolation: fall back to the wall clock for the interval.
+        if (deltaNs == 0 || deltaNs > 500000000ull) deltaNs = hostDelta;
+    }
     const uint64_t vsyncNs = static_cast<uint64_t>(1e9 / refreshHz_);
     const bool canInsert = fgReady_ && prevValid_ && swapImages_.size() >= 3 &&
             deltaNs >= (vsyncNs * 18) / 10;
@@ -1115,7 +1131,13 @@ Java_com_winfg_launcher_OverlayRenderer_nativeCreate(
     }
     winfg::Config cfg;
     cfg.enabled = true;
-    cfg.model = model;
+    // Model 3 (symmetric flow) reports confidence 1.0 for every pixel, which turns
+    // off the occlusion gate downstream: on a bad match the frame is warped and
+    // blended anyway, which is exactly the "melting / watery" look. The overlay
+    // always uses model 4 (bidirectional flow with real per-pixel confidence); the
+    // stored preference still selects the flow solver elsewhere (layer path).
+    (void)model;
+    cfg.model = 4;
     // The overlay presents one generated frame per capture, so 2x is the
     // truthful setting here. The layer path still uses 3x/4x multipliers.
     cfg.multiplier = 2;
