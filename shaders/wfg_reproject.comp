@@ -171,20 +171,23 @@ void main() {
     // No usable motion at all (flat region, failed search): warp nothing.
     float mag   = max(length(F01), length(F10));
     float trust = clamp(1.0 - mag / kMaxFlow, 0.0, 1.0);
+    // ── Gap inpainting (FSR 3 pattern) ───────────────────────────────────────
+    // FSR 3 fills low-confidence regions from a blurred mip of the frame instead
+    // of leaving the nearest exact pixel there. For "no information at all" a
+    // slightly blurred value is a much better guess than a sharp one sampled from
+    // the wrong time — the sharpness is what makes a stale pixel read as a hole.
+    vec3 blur = 0.25 * (texture(uCurr, uv + vec2(invDim.x, 0.0)).rgb
+                      + texture(uCurr, uv - vec2(invDim.x, 0.0)).rgb
+                      + texture(uCurr, uv + vec2(0.0, invDim.y)).rgb
+                      + texture(uCurr, uv - vec2(0.0, invDim.y)).rgb);
     float gate  = smoothstep(0.02, 0.25, conf * trust);
-    col = mix(stillRaw, col, gate);
+    col = mix(blur, col, gate);
 
     // ── Clarity pass ──────────────────────────────────────────────────────────
     // A motion-compensated frame is a resampled frame, so it is always a little
     // softer than the real one; on a small high-DPI panel that reads as the
     // "smeared / watery" look even when the motion is right. A cheap unsharp
-    // mask on the result (4 bilinear taps, no extra pass) restores the edge
-    // contrast the resample lost. Deliberately weak: over-sharpening a frame
-    // that alternates with real frames produces visible shimmer.
-    vec3 blur = 0.25 * (texture(uCurr, uv + vec2(invDim.x, 0.0)).rgb
-                      + texture(uCurr, uv - vec2(invDim.x, 0.0)).rgb
-                      + texture(uCurr, uv + vec2(0.0, invDim.y)).rgb
-                      + texture(uCurr, uv - vec2(0.0, invDim.y)).rgb);
+    // mask on the result restores the edge contrast the resample lost.
     vec3 edge = sameCurr - blur;
     // Gradient clamp: bound the amount of contrast this may add, so a strong edge
     // cannot produce the bright halo that unsharp masking is notorious for.
