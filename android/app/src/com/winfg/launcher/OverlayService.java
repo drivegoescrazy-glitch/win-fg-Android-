@@ -28,6 +28,7 @@ import android.provider.Settings;
 import android.util.DisplayMetrics;
 import android.util.Log;
 import android.view.Choreographer;
+import android.view.Display;
 import android.view.Gravity;
 import android.view.Surface;
 import android.view.SurfaceControl;
@@ -67,7 +68,9 @@ public final class OverlayService extends Service {
     public static final String EXTRA_TARGET_ACTIVITY = "target_activity";
 
     private static final String CHANNEL = "winfg_overlay";
+    private static final String FAILURE_CHANNEL = "winfg_failure";
     private static final int NOTIFICATION_ID = 73;
+    private static final int FAILURE_NOTIFICATION_ID = 75;
     private static volatile boolean running;
 
     private HandlerThread captureThread;
@@ -75,6 +78,8 @@ public final class OverlayService extends Service {
     private final Handler main = new Handler(android.os.Looper.getMainLooper());
 
     private WindowManager windowManager;
+    /** Display-bound context the overlay window is created from. */
+    private Context windowContext;
     private FrameLayout overlayView;
     private TextureView textureView;
     private Surface outputSurface;
@@ -305,13 +310,52 @@ public final class OverlayService extends Service {
                 .build();
     }
 
+    /**
+     * A Service is a non-visual context: its WindowManager has no guaranteed display, and on a
+     * multi-display device like the AYN Thor that can mean metrics of 0x0 or a window that is
+     * added to the wrong display. API 30+ can create a window context bound to a real display;
+     * that is what every view and the window itself is built from.
+     */
+    private Context windowContext() {
+        if (windowContext != null) return windowContext;
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                DisplayManager dm = (DisplayManager) getSystemService(DISPLAY_SERVICE);
+                Display display = dm == null ? null : dm.getDisplay(Display.DEFAULT_DISPLAY);
+                if (display != null) {
+                    windowContext = createWindowContext(
+                            display, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null);
+                    Log.i(TAG, "window context bound to display " + display.getDisplayId()
+                            + " " + display.getMode().getPhysicalWidth() + "x"
+                            + display.getMode().getPhysicalHeight());
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "could not create a display window context", t);
+            }
+        }
+        if (windowContext == null) windowContext = this;
+        return windowContext;
+    }
+
     private void showOverlay() {
         if (overlayView != null) return;
 
-        overlayView = new FrameLayout(this);
+        Context host = windowContext();
+        try {
+            windowManager = (WindowManager) host.getSystemService(WINDOW_SERVICE);
+        } catch (Throwable t) {
+            Log.w(TAG, "window manager from window context failed", t);
+        }
+        if (windowManager == null) {
+            reportFailure("Display service unavailable");
+            stopSelf();
+            return;
+        }
+
+        overlayView = new FrameLayout(host);
         overlayView.setBackgroundColor(Color.TRANSPARENT);
 
-        textureView = new TextureView(this);
+        textureView = new TextureView(host);
         textureView.setOpaque(false);
         textureView.setKeepScreenOn(true);
         textureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
@@ -426,7 +470,8 @@ public final class OverlayService extends Service {
             windowManager.addView(overlayView, overlayParams);
         } catch (Throwable t) {
             Log.e(TAG, "add overlay failed", t);
-            toast("Could not add overlay: " + t.getMessage());
+            reportFailure("Could not add the overlay window: " + t.getClass().getSimpleName()
+                    + (t.getMessage() == null ? "" : " (" + t.getMessage() + ")"));
             stopSelf();
             return;
         }
@@ -448,18 +493,36 @@ public final class OverlayService extends Service {
         startProjection();
     }
 
-    private int screenWidth() {
+    private DisplayMetrics realMetrics() {
         DisplayMetrics dm = new DisplayMetrics();
-        //noinspection deprecation
-        windowManager.getDefaultDisplay().getRealMetrics(dm);
-        return dm.widthPixels;
+        try {
+            DisplayManager dmgr = (DisplayManager) getSystemService(DISPLAY_SERVICE);
+            Display display = dmgr == null ? null : dmgr.getDisplay(Display.DEFAULT_DISPLAY);
+            if (display != null) {
+                display.getRealMetrics(dm);
+                if (dm.widthPixels > 0 && dm.heightPixels > 0) return dm;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "display metrics from DisplayManager failed", t);
+        }
+        try {
+            if (windowManager == null) {
+                windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+            }
+            //noinspection deprecation
+            windowManager.getDefaultDisplay().getRealMetrics(dm);
+        } catch (Throwable t) {
+            Log.w(TAG, "display metrics from WindowManager failed", t);
+        }
+        return dm;
+    }
+
+    private int screenWidth() {
+        return realMetrics().widthPixels;
     }
 
     private int screenHeight() {
-        DisplayMetrics dm = new DisplayMetrics();
-        //noinspection deprecation
-        windowManager.getDefaultDisplay().getRealMetrics(dm);
-        return dm.heightPixels;
+        return realMetrics().heightPixels;
     }
 
     private void ensureRenderer(int width, int height) {
@@ -478,7 +541,7 @@ public final class OverlayService extends Service {
                 // A missing/mismatched libwinfg_overlay.so used to throw out of
                 // the SurfaceTexture callback and kill the process.
                 Log.e(TAG, "overlay renderer library unavailable", t);
-                toast("Frame generation library could not be loaded");
+                reportFailure("Frame generation library could not be loaded");
                 stopSelf();
                 return;
             }
@@ -934,6 +997,9 @@ public final class OverlayService extends Service {
      */
     private void reportFailure(String reason) {
         lastFailure = reason;
+        // A notification owned by the NotificationManager, not the service: this one survives
+        // stopSelf(), so the reason is still readable in the shade after the overlay closes.
+        postFailureNotification(reason);
         Log.e(TAG, reason);
         try {
             java.io.File dir = new java.io.File(getFilesDir(), EngineManager.DIR);
@@ -953,6 +1019,29 @@ public final class OverlayService extends Service {
             if (nm != null) nm.notify(NOTIFICATION_ID, notification("Stopped · " + reason));
         } catch (Throwable ignored) {}
         toast(reason);
+    }
+
+    private void postFailureNotification(String reason) {
+        try {
+            NotificationManager nm =
+                    (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            if (Build.VERSION.SDK_INT >= 26) {
+                NotificationChannel ch = new NotificationChannel(FAILURE_CHANNEL,
+                        "Win-FG stopped", NotificationManager.IMPORTANCE_HIGH);
+                ch.setDescription("Why the overlay ended");
+                nm.createNotificationChannel(ch);
+            }
+            Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                    ? new Notification.Builder(this, FAILURE_CHANNEL)
+                    : new Notification.Builder(this);
+            b.setSmallIcon(R.drawable.ic_foreground)
+                    .setContentTitle("Win-FG overlay stopped")
+                    .setContentText(reason)
+                    .setStyle(new Notification.BigTextStyle().bigText(reason))
+                    .setAutoCancel(true);
+            nm.notify(FAILURE_NOTIFICATION_ID, b.build());
+        } catch (Throwable ignored) {}
     }
 
     @Override

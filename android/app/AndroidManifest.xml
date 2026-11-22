@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.winfg.launcher"
-    android:versionCode="7"
-    android:versionName="1.6"
+    android:versionCode="8"
+    android:versionName="1.7"
     android:installLocation="auto">
 
     <!-- targetSdk stays current. Android 12/13 has no single-app MediaProjection,
@@ -10,9 +10,9 @@
          flag; the non-SDK lookup is exempted at runtime (see OverlayService).
          Android 14+ uses the public single-app MediaProjection path. -->
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
-    <!-- versionCode 7: no-root MediaProjection overlay capture that consumes the
-         projection token immediately, excludes the overlay at window creation and
-         launches the game only once capture is live. -->
+    <!-- versionCode 8: overlay window created from a display-bound window context
+         (a Service's WindowManager has no guaranteed display on multi-display
+         devices), and every early stop now leaves a readable reason. -->
 
     <!-- No-root overlay mode: draw over games and capture the display with the
          user's MediaProjection consent. No root or system layer is required. -->
