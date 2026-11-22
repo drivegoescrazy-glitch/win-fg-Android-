@@ -75,8 +75,11 @@ void main() {
     vec2 F10  = sFwd.xy * fs * invDim;
 
     // A vector that saturates this clamp is a failed match; letting it through
-    // melts the frame (same guard as wfg_synth).
-    const float kMaxFlow = 0.10;
+    // melts the frame. A 10% screen displacement was far too permissive on a
+    // handheld: a wrong vector smeared a huge area before the confidence gate
+    // caught it. Tuned down for Snapdragon-class GPUs, where a real in-frame
+    // displacement between two 16-33 ms samples is well under 4% of the screen.
+    const float kMaxFlow = 0.04;
     float m01 = length(F01); if (m01 > kMaxFlow) F01 *= kMaxFlow / m01;
     float m10 = length(F10); if (m10 > kMaxFlow) F10 *= kMaxFlow / m10;
 
@@ -132,6 +135,21 @@ void main() {
     float trust = clamp(1.0 - mag / kMaxFlow, 0.0, 1.0);
     float gate  = smoothstep(0.02, 0.25, conf * trust);
     col = mix(stillRaw, col, gate);
+
+    // ── Clarity pass ──────────────────────────────────────────────────────────
+    // A motion-compensated frame is a resampled frame, so it is always a little
+    // softer than the real one; on a small high-DPI panel that reads as the
+    // "smeared / watery" look even when the motion is right. A cheap unsharp
+    // mask on the result (4 bilinear taps, no extra pass) restores the edge
+    // contrast the resample lost. Deliberately weak: over-sharpening a frame
+    // that alternates with real frames produces visible shimmer.
+    vec3 blur = 0.25 * (texture(uCurr, uv + vec2(invDim.x, 0.0)).rgb
+                      + texture(uCurr, uv - vec2(invDim.x, 0.0)).rgb
+                      + texture(uCurr, uv + vec2(0.0, invDim.y)).rgb
+                      + texture(uCurr, uv - vec2(0.0, invDim.y)).rgb);
+    vec3 edge = sameCurr - blur;
+    col += 0.22 * edge * w;   // only where the blend was trusted
+    col = clamp(col, 0.0, 1.0);
 
     imageStore(uOut, gid, vec4(col, 1.0));
 }
