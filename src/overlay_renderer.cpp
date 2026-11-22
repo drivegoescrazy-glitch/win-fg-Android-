@@ -1192,6 +1192,19 @@ Java_com_winfg_launcher_OverlayRenderer_nativeCreate(
     cfg.extraImages = extraImages;
     cfg.pacing = pacing;
     cfg.synthMode = synthMode;   // 0 = importance blend, 1 = occlusion-adaptive reprojection
+    // ── OVERLAY COST CEILING ─────────────────────────────────────────────────
+    // The overlay has one interval per captured frame and must fit the whole
+    // solve inside it. With the balanced preset the solve overran a 16 ms budget,
+    // so every capture cost two vsyncs: a 30 fps source produced ~15 real presents
+    // and ~30 presented frames in total (the "halved, then scaled back" symptom).
+    // The overlay therefore always runs the cheapest flow level, caps the TV-L1
+    // iterations, and keeps the cheap reprojection synthesis. The Winlator layer
+    // path is untouched and still honours the full profile.
+    cfg.perfPreset = 2;                 // flow solved at 1/8 resolution
+    if (cfg.frIters > 2) cfg.frIters = 2;
+    if (cfg.gmMode == 0) cfg.gmMode = 2;   // C1 prewarp off: another full-res pass saved
+    cfg.model = 4;
+    cfg.synthMode = 1;
     cfg.sanitize();
 
     Renderer* renderer = new Renderer();
