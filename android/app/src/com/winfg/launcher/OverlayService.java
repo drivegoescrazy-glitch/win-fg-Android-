@@ -118,6 +118,16 @@ public final class OverlayService extends Service {
     private int exclusionRetries;
     private boolean appOnlyCapture;
     private long capturedFrames;
+    /** Freshness of each side of the pipeline; the watchdog acts on these. */
+    private long lastCaptureMs;
+    private long lastPresentMs;
+    private long lastStatusMs;
+    private int lastFps;
+    private int rendererRecoveries;
+    private long lastRendererRecoveryMs;
+    private int captureRestarts;
+    private long lastCaptureRestartMs;
+    private boolean watchdogRunning;
     private boolean frameLoopRunning;
     private Choreographer.FrameCallback frameCallback;
     /** On-overlay status badge: proves the pipeline is live and shows the failure reason. */
@@ -416,8 +426,14 @@ public final class OverlayService extends Service {
                     // size. The Vulkan swapchain has to follow it, or every acquire is
                     // out of date and the overlay stops presenting.
                     ensureRenderer(width, height);
-                    resizeCapture(width, height);
+                    // Capture follows the DISPLAY, not the overlay view. Resizing the
+                    // VirtualDisplay to the view's transient layout size (a game's
+                    // immersive/rotation pass does this a few seconds in) made the
+                    // projection stop producing buffers while still reporting itself as
+                    // running: frame generation died while the cast stayed "active".
+                    resizeCapture(screenWidth(), screenHeight());
                     installSkipScreenshot(overlayView);
+                    note("overlay surface resized to " + width + "x" + height);
                 } catch (Throwable t) {
                     Log.w(TAG, "overlay resize failed", t);
                 }
@@ -425,6 +441,7 @@ public final class OverlayService extends Service {
 
             @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
                 try {
+                    note("overlay surface destroyed");
                     surfaceReady = false;
                     stopFrameLoop();
                     synchronized (rendererLock) {
@@ -623,6 +640,11 @@ public final class OverlayService extends Service {
             renderer = r;
             rendererWidth = width;
             rendererHeight = height;
+            // Start the "nothing presented" clock here, not at zero: a renderer that
+            // never presents once must still be caught by the watchdog.
+            lastPresentMs = android.os.SystemClock.elapsedRealtime();
+            note("renderer started " + width + "x" + height
+                    + (s.mirrorOnly ? " mirror-only" : " 2x"));
             Log.i(TAG, "overlay renderer started " + width + "x" + height
                     + " @" + displayRefreshRate() + "Hz"
                     + (s.mirrorOnly ? " mirror-only" : ""));
@@ -656,6 +678,7 @@ public final class OverlayService extends Service {
         long elapsed = now - hudWindowStart;
         if (elapsed < 1000) return;
         int fps = (int) (hudFrames * 1000 / Math.max(1, elapsed));
+        lastFps = fps;
         hudFrames = 0;
         hudWindowStart = now;
         main.post(() -> {
@@ -664,6 +687,142 @@ public final class OverlayService extends Service {
                         ? "Win-FG mirror · " : "Win-FG 2× · ") + fps + " fps");
             }
         });
+    }
+
+    /**
+     * One line in files/win-fg/overlay.log, which the crash reporter ships with a fault.
+     * With no adb, the sequence of transitions is the only way to tell a dead renderer
+     * from a stalled capture after the fact.
+     */
+    private void note(String line) {
+        Log.i(TAG, line);
+        try {
+            java.io.File dir = new java.io.File(getFilesDir(), EngineManager.DIR);
+            if (dir.exists() || dir.mkdirs()) {
+                String stamp = new java.text.SimpleDateFormat("HH:mm:ss.SSS",
+                        java.util.Locale.US).format(new java.util.Date());
+                try (java.io.FileOutputStream out = new java.io.FileOutputStream(
+                        new java.io.File(dir, "overlay.log"), true)) {
+                    out.write((stamp + "  " + line + "\n").getBytes("UTF-8"));
+                }
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private void startWatchdog() {
+        if (watchdogRunning) return;
+        watchdogRunning = true;
+        lastCaptureMs = android.os.SystemClock.elapsedRealtime();
+        main.postDelayed(watchdog, 1500);
+    }
+
+    private void stopWatchdog() {
+        watchdogRunning = false;
+        main.removeCallbacks(watchdog);
+    }
+
+    private final Runnable watchdog = new Runnable() {
+        @Override public void run() {
+            if (!watchdogRunning) return;
+            try {
+                checkPipeline();
+            } catch (Throwable t) {
+                Log.w(TAG, "watchdog failed", t);
+            }
+            if (watchdogRunning) main.postDelayed(this, 1000);
+        }
+    };
+
+    /**
+     * Recovers the two ways a live session silently stops generating frames while the
+     * notification still says it is capturing: the capture stops delivering buffers, or
+     * the renderer stops presenting them (a display-mode change wedges the swapchain).
+     * Both were reported as "works for a few seconds, then nothing".
+     */
+    private void checkPipeline() {
+        if (!running || stopping || projection == null) return;
+        long now = android.os.SystemClock.elapsedRealtime();
+        boolean haveWindow = surfaceReady && outputSurface != null && overlayView != null;
+        long sinceCapture = lastCaptureMs == 0 ? 0 : now - lastCaptureMs;
+        long sincePresent = lastPresentMs == 0 ? 0 : now - lastPresentMs;
+
+        // Capture is delivering but nothing is presented: the swapchain or renderer is
+        // wedged. This is unambiguous, so rebuild it without waiting.
+        if (haveWindow && renderer != null && sinceCapture < 2000 && sincePresent > 2500) {
+            if (rendererRecoveries < 6 && now - lastRendererRecoveryMs > 4000) {
+                rendererRecoveries++;
+                lastRendererRecoveryMs = now;
+                note("watchdog: nothing presented for " + sincePresent + " ms while capture"
+                        + " is flowing; rebuilding the renderer (attempt " + rendererRecoveries + ")");
+                restartRenderer();
+            }
+        }
+
+        // Nothing arriving at all for a long time: the projection display itself has
+        // stalled. A paused game makes no frames either, so this is rate-limited hard.
+        if (sinceCapture > 15000 && captureRestarts < 2 && now - lastCaptureRestartMs > 20000) {
+            captureRestarts++;
+            lastCaptureRestartMs = now;
+            note("watchdog: no capture frame for " + sinceCapture + " ms; rebuilding the"
+                    + " capture display (attempt " + captureRestarts + ")");
+            restartCapture();
+        }
+
+        if (now - lastStatusMs > 5000) {
+            lastStatusMs = now;
+            String status;
+            if (lastCaptureMs == 0) {
+                status = "waiting for the first captured frame";
+            } else if (sinceCapture < 3000) {
+                status = lastFps + " fps" + (settings != null && settings.mirrorOnly
+                        ? " · mirror only" : " · 2x");
+            } else {
+                status = "no new frames for " + (sinceCapture / 1000) + " s";
+            }
+            updateNotification("Screen capture + frame generation · " + status);
+        }
+    }
+
+    /** Rebuilds the Vulkan renderer against the surface that is already in the window. */
+    private void restartRenderer() {
+        synchronized (rendererLock) {
+            if (renderer != null) {
+                renderer.stop();
+                renderer = null;
+            }
+        }
+        rendererRetried = false;
+        rendererLost = false;
+        rendererWidth = 0;
+        rendererHeight = 0;
+        if (surfaceReady && outputSurface != null) {
+            ensureRenderer(surfaceWidth, surfaceHeight);
+            if (renderer != null) note("renderer rebuilt");
+        } else {
+            scheduleOverlayReattach();
+        }
+    }
+
+    /** Recreates the projected display against the same MediaProjection consent. */
+    private void restartCapture() {
+        synchronized (projectionLock) {
+            if (projection == null) return;
+            int w = screenWidth();
+            int h = screenHeight();
+            if (w <= 0 || h <= 0) return;
+            try {
+                if (virtualDisplay != null) {
+                    virtualDisplay.release();
+                    virtualDisplay = null;
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "release of the stalled capture display failed", t);
+            }
+            createReader(w, h);
+            startVirtualDisplay();
+            lastCaptureMs = android.os.SystemClock.elapsedRealtime();
+            capturedFrames = 0;
+        }
     }
 
     private void showHudError(String text) {
@@ -795,6 +954,8 @@ public final class OverlayService extends Service {
         }
         Log.i(TAG, "projection started " + captureWidth + "x" + captureHeight
                 + " appOnly=" + appOnlyCapture);
+        note("capture display started " + captureWidth + "x" + captureHeight);
+        startWatchdog();
         updateNotification("Screen capture + frame generation · tap STOP to end");
     }
 
@@ -873,11 +1034,17 @@ public final class OverlayService extends Service {
                 Log.i(TAG, "first capture frame " + captureWidth + "x" + captureHeight
                         + " usage=0x" + Long.toHexString(usage));
             }
+            lastCaptureMs = android.os.SystemClock.elapsedRealtime();
             int presented;
             synchronized (rendererLock) {
                 presented = renderer == null ? 0 : renderer.submit(buffer, image.getTimestamp());
             }
             if (presented > 0) {
+                lastPresentMs = android.os.SystemClock.elapsedRealtime();
+                // The pipeline is proven healthy again: allow the window to be
+                // re-attached as often as it takes instead of giving up forever.
+                reattachAttempts = 0;
+                rendererRecoveries = 0;
                 // The overlay is actually presenting frames. Only now is it safe to let
                 // the game take the display: launching earlier rotated and resized the
                 // overlay surface while Vulkan was still initialising.
@@ -1114,16 +1281,20 @@ public final class OverlayService extends Service {
      * running across the gap; only the renderer and the view are rebuilt.
      */
     private void scheduleOverlayReattach() {
-        if (!running || reattachAttempts >= 5) {
-            if (reattachAttempts >= 5) {
+        // No permanent give-up: a game can destroy the overlay surface on every activity
+        // change, and stopping after five left the user with a live capture and no
+        // overlay at all. reattachAttempts is reset on every presented frame, so this
+        // ceiling only bounds a storm of attempts between two healthy frames.
+        if (!running || reattachAttempts >= 20) {
+            if (reattachAttempts >= 20) {
                 Log.w(TAG, "overlay surface keeps disappearing; capture left running");
             }
             return;
         }
         reattachAttempts++;
+        note("re-attaching overlay window (attempt " + reattachAttempts + ")");
         main.postDelayed(() -> {
             if (!running) return;
-            Log.i(TAG, "re-attaching overlay window (attempt " + reattachAttempts + ")");
             try {
                 if (overlayView != null) windowManager.removeView(overlayView);
             } catch (Throwable ignored) {}
@@ -1193,6 +1364,8 @@ public final class OverlayService extends Service {
     public void onDestroy() {
         running = false;
         stopping = true;
+        stopWatchdog();
+        note("overlay session ended after " + capturedFrames + " captured frames");
         main.removeCallbacks(hideHud);
         stopFrameLoop();
         stopCapture();

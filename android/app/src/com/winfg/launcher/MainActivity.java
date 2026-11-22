@@ -185,7 +185,19 @@ public final class MainActivity extends Activity {
     private void showCrashReports() {
         List<CrashReports.Report> pending = CrashReports.pending(this);
         if (pending.isEmpty()) {
-            toast("No crash reports to send");
+            // A session that stops generating frames leaves no crash behind, so offer the
+            // session log instead: it records which side of the pipeline stalled.
+            String log = CrashLog.sessionLogTail(this, 120);
+            if (log.isEmpty()) {
+                toast("No crash reports and no session log yet");
+                return;
+            }
+            CrashReports.enqueue(this, "log",
+                    "[session] overlay log · v" + AppInfo.VERSION_NAME, 
+                    CrashReports.describe(this) + "\n### Session log\n\n```\n" + log + "\n```\n");
+            refreshCrashStatus();
+            CrashReports.Report made = CrashReports.latest(this);
+            if (made != null) sendReport(made);
             return;
         }
         String[] labels = new String[pending.size()];
@@ -221,10 +233,10 @@ public final class MainActivity extends Activity {
         if (crashStatus == null) return;
         List<CrashReports.Report> pending = CrashReports.pending(this);
         if (pending.isEmpty()) {
-            crashStatus.setText("No crash reports · a fault is saved here and can be filed"
-                    + " on GitHub in one tap");
+            crashStatus.setText("No crash reports · this button files the session log"
+                    + " instead, which shows where the pipeline stalled");
             crashStatus.setTextColor(getColor(R.color.muted));
-            if (crashReport != null) crashReport.setEnabled(false);
+            if (crashReport != null) crashReport.setEnabled(true);
             return;
         }
         int unsent = 0;
