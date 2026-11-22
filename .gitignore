@@ -5,3 +5,13 @@ vk-headers/
 
 # local scratch helpers
 watch_*.sh
+
+# Android build inputs/outputs (rebuilt by android/build_apk.sh)
+.toolchain/
+build-android/
+android/build/
+android/dist/
+android/app/assets/win-fg/libwin_fg.so
+android/app/assets/win-fg/VkLayer_win_framegen.json
+android/app/assets/win-fg/VERSION
+*.apk.idsig

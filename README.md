@@ -169,6 +169,10 @@ Native these are driven by the host app rather than a file.
 | `fr_eps` | `WIN_FG_FR_EPS` | `0.05` | Charbonnier epsilon (px) |
 | `debug` | `WIN_FG_DEBUG` | `off` | granular per-frame present-path trace to logcat for freeze triage; default off = zero overhead |
 
+The Android launcher writes these as `winfg.*` system properties (and a
+`conf.toml`); both are applied after env/conf, so the app's profile wins when it
+is installed.
+
 Setting `global_motion` or `flow_reg` to `off` makes the chain byte-identical
 to the version without that stage.
 
@@ -278,6 +282,24 @@ Endgame and success gates in [`docs/research/SANFG.md`](docs/research/SANFG.md).
   `VK_KHR_present_wait`, which is why 750/gen7 never showed it. Fix: forward
   `pNext` onto real-frame presents only; a generated frame must never carry a
   present id.
+
+## Android launcher (v1)
+
+`android/` is a companion APK for Win-FG: a **game library**, a full **frame-gen
+settings editor** (optical flow model, 2×/3×/4× increase, performance preset,
+flow scale, C1/C2, pacing, debug), and the engine's **layer installer**. It
+bundles a freshly built `libwin_fg.so` + layer manifest, writes the profile to
+`conf.toml`, and — on rooted devices — installs a Magisk module and mirrors the
+profile into `winfg.*` system properties, which the layer reads live (and lives
+in `/data/local/tmp/win-fg/conf.toml` for exported/host use).
+
+```bash
+bash android/build_apk.sh     # -> android/dist/win-fg-v1.0.apk (signed)
+```
+
+Build details and the root/install flow are in [`android/README.md`](android/README.md).
+The release signing key lives in `android/keys/` and **must be reused for every
+update** — Android refuses an APK signed by a different key.
 
 ## Building
 

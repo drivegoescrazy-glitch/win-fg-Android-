@@ -47,6 +47,7 @@ struct DeviceState {
     bool fgInited = false;
     std::string confPath;          // guest conf.toml, watched for live hot-reload
     long long confMtime = 0;
+    int confRev = 0;               // winfg.rev the current cfg was built from (launcher)
     bool resetPrev = false;        // set on any conf change -> recapture prev frame
     // ── EVEN-CADENCE FRAME PACING state (see cfg.pacing) ──────────────────────
     // paceDtNs  : EMA of the guest's real-frame interval (ns). 0 = not warm yet.
@@ -579,6 +580,7 @@ extern "C" VkResult VKAPI_CALL winfg_CreateDevice(
     void* ik = dispatch_key(phys);
     st.id = &g_inst[ik];
     st.cfg = load_config();
+    st.confRev = prop_i("winfg.rev", 0);
     st.confPath = conf_path();
     st.confMtime = stat_mtime(st.confPath);
     // pick a queue family with compute
@@ -811,6 +813,20 @@ extern "C" VkResult VKAPI_CALL winfg_QueuePresentKHR(VkQueue queue, const VkPres
     if (it == g_dev.end()) return VK_ERROR_DEVICE_LOST;
     DeviceState* st = &it->second;
     const bool dbg = st->cfg.debug;   // granular present-path trace gate (default off)
+
+    // Live profile from the Win-FG Launcher (winfg.* system properties). The
+    // launcher bumps winfg.rev on every settings change / game launch; one fast
+    // property lookup per present, and a full configure() only when it moves.
+    const int profileRev = prop_i("winfg.rev", 0);
+    if (profileRev != st->confRev) {
+        st->confRev = profileRev;
+        Config pc = load_config();
+        WFG_LOGI("launcher profile: rev=%d enabled=%d mult=%d model=%d preset=%d flow=%.2f",
+                 profileRev, pc.enabled, pc.multiplier, pc.model, pc.perfPreset, pc.flowScale);
+        st->cfg = pc;
+        if (st->fgInited) st->fg.configure(pc);
+        st->resetPrev = true;
+    }
 
     // Hot-reload conf.toml so the in-game controls (enable / multiplier / model /
     // flow scale) reach the layer live. Cheap stat every present; only re-read the

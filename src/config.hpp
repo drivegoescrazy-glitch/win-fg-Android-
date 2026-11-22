@@ -5,9 +5,14 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
 #include <string>
 #include <fstream>
 #include <sstream>
+#include <unistd.h>
+#if defined(__ANDROID__)
+#include <sys/system_properties.h>
+#endif
 
 namespace winfg {
 
@@ -176,6 +181,38 @@ static inline int envi(const char* k, int d) {
     const char* v = std::getenv(k); return v ? std::atoi(v) : d;
 }
 
+// ── Win-FG Launcher live profile ──────────────────────────────────────────────
+// The launcher app cannot write into another app's private files, but Android
+// system properties are readable from every process. It pushes the selected
+// profile as winfg.* properties (root, via the installed Magisk layer) and bumps
+// winfg.rev; the layer re-reads on a rev change. A device that never ran the
+// launcher has no winfg.rev and is byte-identical to a build without this.
+static inline bool prop_get(const char* k, char* out, size_t cap) {
+#if defined(__ANDROID__)
+    if (!out || cap == 0) return false;
+    char tmp[PROP_VALUE_MAX] = {0};
+    if (__system_property_get(k, tmp) <= 0) return false;
+    std::snprintf(out, cap, "%s", tmp);
+    return true;
+#else
+    (void)k; (void)out; (void)cap; return false;
+#endif
+}
+static inline int prop_i(const char* k, int d) {
+    char v[128];
+    return prop_get(k, v, sizeof v) ? std::atoi(v) : d;
+}
+static inline float prop_f(const char* k, float d) {
+    char v[128];
+    return prop_get(k, v, sizeof v) ? std::strtof(v, nullptr) : d;
+}
+static inline bool prop_b(const char* k, bool d) {
+    char v[128];
+    if (!prop_get(k, v, sizeof v)) return d;
+    return std::strcmp(v, "1") == 0 || std::strcmp(v, "true") == 0 ||
+           std::strcmp(v, "on") == 0 || std::strcmp(v, "yes") == 0;
+}
+
 // "auto"/"on"/"off" (also true/false/on/off numerics) -> {0 auto, 1 on, 2 off}.
 static inline int parse_tristate(const std::string& v, int dflt) {
     if (v.empty()) return dflt;
@@ -255,11 +292,24 @@ static inline void apply_toml(Config& c, const std::string& path) {
     }
 }
 
+// Global profile written by the Win-FG Launcher app. Kept in a world-readable
+// location so a system-installed (Magisk) layer can read it from any game
+// process, whose HOME is its own data dir rather than a shared location.
+static inline const char* kLauncherConfPath = "/data/local/tmp/win-fg/conf.toml";
+static inline bool conf_readable(const char* p) {
+    return p && access(p, R_OK) == 0;
+}
+
 // Path of the conf.toml the app writes (used for hot-reload mtime checks).
+// Priority: explicit WIN_FG_CONF, then the launcher's global profile, then the
+// per-user config under $HOME. The same file the layer watches is the one whose
+// values win in load_config() below.
 static inline std::string conf_path() {
     if (const char* p = std::getenv("WIN_FG_CONF")) return p;
+    if (conf_readable(kLauncherConfPath)) return kLauncherConfPath;
     const char* home = std::getenv("HOME");
-    return home ? std::string(home) + "/.config/win-fg/conf.toml" : std::string();
+    if (home) return std::string(home) + "/.config/win-fg/conf.toml";
+    return kLauncherConfPath;
 }
 
 // Resolve the capture output root: explicit override, else $HOME/.cache/winfg-capture,
@@ -316,7 +366,33 @@ static inline Config load_config() {
     }
     const char* home = std::getenv("HOME");
     if (home) apply_toml(c, std::string(home) + "/.config/win-fg/conf.toml");
-    if (const char* p = std::getenv("WIN_FG_CONF")) apply_toml(c, p);
+    if (const char* p = std::getenv("WIN_FG_CONF")) {
+        apply_toml(c, p);                       // explicit override always wins
+    } else {
+        apply_toml(c, kLauncherConfPath);       // Win-FG Launcher profile (global layer)
+    }
+#if defined(__ANDROID__)
+    // Highest priority: the live profile pushed by the Win-FG Launcher. Only
+    // applied when winfg.rev exists, so a stock layer ignores stale props.
+    char launcherRev[PROP_VALUE_MAX] = {0};
+    if (__system_property_get("winfg.rev", launcherRev) > 0) {
+        c.enabled      = prop_b("winfg.enabled", c.enabled);
+        c.debug        = prop_b("winfg.debug", c.debug);
+        c.pacing       = prop_b("winfg.pacing", c.pacing);
+        c.model        = prop_i("winfg.model", c.model);
+        c.multiplier   = prop_i("winfg.mult", c.multiplier);
+        c.perfPreset   = prop_i("winfg.preset", c.perfPreset);
+        c.extraImages  = prop_i("winfg.extra", c.extraImages);
+        c.flowScale    = prop_f("winfg.flow", c.flowScale);
+        c.gmMode       = prop_i("winfg.gm", c.gmMode);
+        c.frMode       = prop_i("winfg.reg", c.frMode);
+        c.frIters      = prop_i("winfg.iters", c.frIters);
+        c.frLambda     = prop_f("winfg.lambda", c.frLambda);
+        c.frDt         = prop_f("winfg.dt", c.frDt);
+        c.frEdge       = prop_f("winfg.edge", c.frEdge);
+        c.frEps        = prop_f("winfg.eps", c.frEps);
+    }
+#endif
     c.sanitize();
     return c;
 }

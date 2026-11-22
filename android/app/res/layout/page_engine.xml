@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/page_engine"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:scrollbars="none">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_notice"
+            android:padding="12dp"
+            android:text="The engine is bundled inside this APK. Root installs it as a system Vulkan layer so launched games use it automatically; without root you can still launch games and export the layer + profile to a host."
+            android:textColor="@color/muted"
+            android:textSize="11sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginTop="12dp"
+            android:layout_marginBottom="12dp">
+
+            <TextView style="@style/SectionLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="BUNDLED ENGINE" />
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingBottom="8dp">
+                <TextView android:layout_width="110dp" android:layout_height="wrap_content" android:text="Status" android:textColor="@color/muted" android:textSize="12sp" />
+                <TextView android:id="@+id/engine_status" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Checking…" android:textColor="@color/text" android:textSize="12sp" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingBottom="8dp">
+                <TextView android:layout_width="110dp" android:layout_height="wrap_content" android:text="Version" android:textColor="@color/muted" android:textSize="12sp" />
+                <TextView android:id="@+id/engine_version" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Win-FG v1.0" android:textColor="@color/text" android:textSize="12sp" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingBottom="8dp">
+                <TextView android:layout_width="110dp" android:layout_height="wrap_content" android:text="Layer" android:textColor="@color/muted" android:textSize="12sp" />
+                <TextView android:id="@+id/engine_layer" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="assets/win-fg/libwin_fg.so" android:textColor="@color/text" android:textSize="11sp" android:fontFamily="monospace" />
+            </LinearLayout>
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingBottom="12dp">
+                <TextView android:layout_width="110dp" android:layout_height="wrap_content" android:text="Profile" android:textColor="@color/muted" android:textSize="12sp" />
+                <TextView android:id="@+id/engine_profile" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="files/win-fg/conf.toml" android:textColor="@color/text" android:textSize="10sp" android:fontFamily="monospace" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btn_install"
+                style="@style/PrimaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:text="INSTALL SYSTEM LAYER (ROOT)" />
+
+            <Button
+                android:id="@+id/btn_remove"
+                style="@style/SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:layout_marginTop="8dp"
+                android:text="REMOVE SYSTEM LAYER" />
+
+            <Button
+                android:id="@+id/btn_check"
+                style="@style/SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:layout_marginTop="8dp"
+                android:text="CHECK ROOT / LAYER STATUS" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginBottom="12dp">
+
+            <TextView style="@style/SectionLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="UPDATE KEY" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Future versions must be signed with this certificate to install over v1.0. Keep this signing key for every update."
+                android:textColor="@color/muted"
+                android:textSize="11sp" />
+
+            <TextView
+                android:id="@+id/engine_sha"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:fontFamily="monospace"
+                android:text="SHA-256: …"
+                android:textColor="@color/accent"
+                android:textSize="9sp"
+                android:textIsSelectable="true" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginBottom="12dp">
+
+            <TextView style="@style/SectionLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="USE WITH A HOST" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Pick a folder and the app writes libwin_fg.so, VkLayer_win_framegen.json and your conf.toml into win-fg/. Point a Winlator/Bannerlator container's Vulkan layer path at it and enable the layer with WIN_FG_ENABLE=1."
+                android:textColor="@color/muted"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btn_hostfolder"
+                style="@style/SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:layout_marginTop="10dp"
+                android:text="CHOOSE HOST FOLDER" />
+
+            <TextView
+                android:id="@+id/engine_hostpath"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:text="No host folder selected"
+                android:textColor="@color/muted"
+                android:textSize="10sp"
+                android:fontFamily="monospace" />
+
+            <Button
+                android:id="@+id/btn_export_conf"
+                style="@style/SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:layout_marginTop="10dp"
+                android:text="EXPORT PROFILE (.TOML)" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginBottom="12dp">
+
+            <TextView style="@style/SectionLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="UPDATES" />
+
+            <TextView
+                android:id="@+id/update_version"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="You are on v1.0. Release builds keep the same update key, so newer APKs install straight over this one."
+                android:textColor="@color/muted"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btn_updates"
+                style="@style/PrimaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:layout_marginTop="10dp"
+                android:text="OPEN RELEASES PAGE" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingBottom="18dp"
+            android:text="Win-FG Native · clean-room frame generation for Vulkan. Layer mode reads the launcher profile from /data/local/tmp/win-fg/conf.toml once the system layer is installed."
+            android:textColor="@color/muted"
+            android:textSize="10sp" />
+    </LinearLayout>
+</ScrollView>

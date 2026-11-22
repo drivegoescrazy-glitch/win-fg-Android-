@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@color/bg</item>
+        <item name="android:navigationBarColor">@color/bg</item>
+        <item name="android:colorAccent">@color/accent</item>
+        <item name="android:colorPrimary">@color/accent</item>
+        <item name="android:textColorPrimary">@color/text</item>
+        <item name="android:textColorSecondary">@color/muted</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:fontFamily">sans-serif</item>
+    </style>
+
+    <style name="SectionLabel">
+        <item name="android:textSize">10sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">@color/accent</item>
+        <item name="android:letterSpacing">0.18</item>
+        <item name="android:paddingBottom">10dp</item>
+    </style>
+
+    <style name="RowTitle">
+        <item name="android:textSize">14sp</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:textStyle">normal</item>
+    </style>
+
+    <style name="RowSub">
+        <item name="android:textSize">11sp</item>
+        <item name="android:textColor">@color/muted</item>
+        <item name="android:paddingTop">2dp</item>
+    </style>
+
+    <style name="ValueLabel">
+        <item name="android:textSize">13sp</item>
+        <item name="android:textColor">@color/accent</item>
+        <item name="android:fontFamily">monospace</item>
+    </style>
+
+    <style name="ChipButton">
+        <item name="android:layout_height">42dp</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:textSize">11sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">0.06</item>
+        <item name="android:textColor">@color/chip_text</item>
+        <item name="android:background">@drawable/bg_chip</item>
+        <item name="android:stateListAnimator">@null</item>
+        <item name="android:paddingLeft">0dp</item>
+        <item name="android:paddingRight">0dp</item>
+    </style>
+
+    <style name="PrimaryButton">
+        <item name="android:layout_height">46dp</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">0.06</item>
+        <item name="android:textColor">@color/accentInk</item>
+        <item name="android:background">@drawable/bg_button_primary</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
+
+    <style name="SecondaryButton">
+        <item name="android:layout_height">46dp</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:letterSpacing">0.04</item>
+        <item name="android:textColor">@color/text</item>
+        <item name="android:background">@drawable/bg_button_secondary</item>
+        <item name="android:stateListAnimator">@null</item>
+    </style>
+</resources>

@@ -1,0 +1,334 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/page_settings"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true"
+    android:scrollbars="none">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <TextView
+            android:id="@+id/settings_summary"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="2×  ·  OPTICAL FLOW  ·  BALANCED"
+            android:textColor="@color/accent"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:letterSpacing="0.1"
+            android:paddingBottom="12dp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginBottom="12dp">
+
+            <TextView style="@style/SectionLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="FRAME GENERATION" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView style="@style/RowTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Enable frame generation" />
+                    <TextView style="@style/RowSub" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Synthesize in-between frames with win-fg" />
+                </LinearLayout>
+
+                <Switch
+                    android:id="@+id/sw_enabled"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:showText="false" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="12dp"
+                android:layout_marginBottom="12dp"
+                android:background="@color/stroke" />
+
+            <TextView style="@style/RowTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Optical flow engine" />
+            <TextView style="@style/RowSub" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Symmetric flow is cheaper; bidirectional is sharper on complex motion" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="10dp">
+
+                <Button
+                    android:id="@+id/mode_flow"
+                    style="@style/ChipButton"
+                    android:layout_width="0dp"
+                    android:layout_height="42dp"
+                    android:layout_weight="1"
+                    android:text="OPTICAL FLOW" />
+
+                <Button
+                    android:id="@+id/mode_bidir"
+                    style="@style/ChipButton"
+                    android:layout_width="0dp"
+                    android:layout_height="42dp"
+                    android:layout_weight="1"
+                    android:layout_marginLeft="8dp"
+                    android:text="BIDIRECTIONAL" />
+            </LinearLayout>
+
+            <TextView style="@style/RowTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="Frame increase" />
+            <TextView style="@style/RowSub" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="How many presented frames per real frame" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="10dp">
+
+                <Button android:id="@+id/mult_2" style="@style/ChipButton" android:layout_width="0dp" android:layout_weight="1" android:text="2×" />
+                <Button android:id="@+id/mult_3" style="@style/ChipButton" android:layout_width="0dp" android:layout_weight="1" android:layout_marginLeft="8dp" android:text="3×" />
+                <Button android:id="@+id/mult_4" style="@style/ChipButton" android:layout_width="0dp" android:layout_weight="1" android:layout_marginLeft="8dp" android:text="4×" />
+            </LinearLayout>
+
+            <TextView style="@style/RowTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="Performance preset" />
+            <Spinner
+                android:id="@+id/spinner_preset"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_search"
+                android:paddingLeft="4dp"
+                android:paddingRight="4dp"
+                android:popupBackground="@color/surface2" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="14dp">
+
+                <TextView style="@style/RowTitle" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Flow scale" />
+                <TextView android:id="@+id/val_flowscale" style="@style/ValueLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="1.00" />
+            </LinearLayout>
+
+            <SeekBar
+                android:id="@+id/seek_flowscale"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="79"
+                android:progressTint="@color/accent"
+                android:thumbTint="@color/accent" />
+
+            <TextView style="@style/RowSub" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Scales solved motion. Lower is calmer, higher keeps fast pans sharper." />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginBottom="12dp">
+
+            <TextView style="@style/SectionLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="QUALITY" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView style="@style/RowTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Global motion (C1)" />
+                    <TextView style="@style/RowSub" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Camera pre-warp removes pan melt" />
+                </LinearLayout>
+
+                <Spinner
+                    android:id="@+id/spinner_gm"
+                    android:layout_width="112dp"
+                    android:layout_height="42dp"
+                    android:background="@drawable/bg_search"
+                    android:popupBackground="@color/surface2" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="12dp">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView style="@style/RowTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Flow regularization (C2)" />
+                    <TextView style="@style/RowSub" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Edge-aware TV-L1 smoothing of the flow field" />
+                </LinearLayout>
+
+                <Spinner
+                    android:id="@+id/spinner_reg"
+                    android:layout_width="112dp"
+                    android:layout_height="42dp"
+                    android:background="@drawable/bg_search"
+                    android:popupBackground="@color/surface2" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="14dp">
+
+                <TextView style="@style/RowTitle" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="TV-L1 iterations" />
+                <TextView android:id="@+id/val_iters" style="@style/ValueLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="4" />
+            </LinearLayout>
+
+            <SeekBar
+                android:id="@+id/seek_iters"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="16"
+                android:progressTint="@color/accent"
+                android:thumbTint="@color/accent" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="8dp">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView style="@style/RowTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Even pacing" />
+                    <TextView style="@style/RowSub" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Place generated frames near the temporal midpoint" />
+                </LinearLayout>
+
+                <Switch
+                    android:id="@+id/sw_pacing"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:showText="false" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:layout_marginTop="14dp">
+
+                <TextView style="@style/RowTitle" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Extra swapchain images" />
+                <TextView android:id="@+id/val_extra" style="@style/ValueLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="2" />
+            </LinearLayout>
+
+            <SeekBar
+                android:id="@+id/seek_extra"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="8"
+                android:progressTint="@color/accent"
+                android:thumbTint="@color/accent" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginBottom="12dp">
+
+            <TextView style="@style/SectionLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="ADVANCED" />
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal">
+                <TextView style="@style/RowTitle" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Flow L1 lambda" />
+                <TextView android:id="@+id/val_lambda" style="@style/ValueLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="2.0" />
+            </LinearLayout>
+            <SeekBar android:id="@+id/seek_lambda" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="80" android:progressTint="@color/accent" android:thumbTint="@color/accent" />
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="10dp">
+                <TextView style="@style/RowTitle" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Smoothing step (dt)" />
+                <TextView android:id="@+id/val_dt" style="@style/ValueLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="0.25" />
+            </LinearLayout>
+            <SeekBar android:id="@+id/seek_dt" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="99" android:progressTint="@color/accent" android:thumbTint="@color/accent" />
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="10dp">
+                <TextView style="@style/RowTitle" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Edge sensitivity" />
+                <TextView android:id="@+id/val_edge" style="@style/ValueLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="8.0" />
+            </LinearLayout>
+            <SeekBar android:id="@+id/seek_edge" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="64" android:progressTint="@color/accent" android:thumbTint="@color/accent" />
+
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:layout_marginTop="10dp">
+                <TextView style="@style/RowTitle" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Charbonnier epsilon" />
+                <TextView android:id="@+id/val_eps" style="@style/ValueLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="0.050" />
+            </LinearLayout>
+            <SeekBar android:id="@+id/seek_eps" android:layout_width="match_parent" android:layout_height="wrap_content" android:max="99" android:progressTint="@color/accent" android:thumbTint="@color/accent" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="12dp">
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical">
+
+                    <TextView style="@style/RowTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Debug trace" />
+                    <TextView style="@style/RowSub" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Per-frame present-path logging under logcat tag win-fg" />
+                </LinearLayout>
+
+                <Switch
+                    android:id="@+id/sw_debug"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:showText="false" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btn_reset"
+                style="@style/SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:layout_marginTop="14dp"
+                android:text="RESET TO DEFAULTS" />
+        </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingBottom="18dp"
+            android:text="Settings save automatically and are written to the win-fg conf.toml profile before every game launch."
+            android:textColor="@color/muted"
+            android:textSize="11sp" />
+    </LinearLayout>
+</ScrollView>

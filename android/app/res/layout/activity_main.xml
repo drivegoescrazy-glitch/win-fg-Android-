@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/bg">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:paddingLeft="18dp"
+        android:paddingRight="18dp"
+        android:paddingTop="16dp"
+        android:paddingBottom="12dp">
+
+        <ImageView
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:background="@drawable/bg_logo"
+            android:padding="5dp"
+            android:src="@drawable/ic_foreground"
+            android:contentDescription="Win-FG" />
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:layout_marginLeft="12dp"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="WIN-FG"
+                android:textColor="@color/text"
+                android:textSize="23sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.06" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="FRAME GENERATION ENGINE"
+                android:textColor="@color/accent"
+                android:textSize="9sp"
+                android:textStyle="bold"
+                android:letterSpacing="0.18" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/header_version"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:background="@drawable/bg_pill"
+            android:paddingLeft="11dp"
+            android:paddingRight="11dp"
+            android:paddingTop="5dp"
+            android:paddingBottom="5dp"
+            android:text="v1.0"
+            android:textColor="@color/accent"
+            android:textSize="11sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:paddingLeft="18dp"
+        android:paddingRight="18dp"
+        android:paddingBottom="8dp">
+
+        <TextView
+            android:id="@+id/tab_games"
+            style="@style/ChipButton"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="38dp"
+            android:background="@drawable/bg_tab"
+            android:text="GAMES"
+            android:gravity="center"
+            android:textColor="@color/tab_text"
+            android:letterSpacing="0.12"
+            android:clickable="true"
+            android:focusable="true" />
+
+        <TextView
+            android:id="@+id/tab_settings"
+            style="@style/ChipButton"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="38dp"
+            android:layout_marginLeft="6dp"
+            android:background="@drawable/bg_tab"
+            android:text="FRAME GEN"
+            android:gravity="center"
+            android:textColor="@color/tab_text"
+            android:letterSpacing="0.12"
+            android:clickable="true"
+            android:focusable="true" />
+
+        <TextView
+            android:id="@+id/tab_engine"
+            style="@style/ChipButton"
+            android:layout_width="0dp"
+            android:layout_weight="1"
+            android:layout_height="38dp"
+            android:layout_marginLeft="6dp"
+            android:background="@drawable/bg_tab"
+            android:text="ENGINE"
+            android:gravity="center"
+            android:textColor="@color/tab_text"
+            android:letterSpacing="0.12"
+            android:clickable="true"
+            android:focusable="true" />
+    </LinearLayout>
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <include layout="@layout/page_games" />
+        <include layout="@layout/page_settings" />
+        <include layout="@layout/page_engine" />
+    </FrameLayout>
+</LinearLayout>
