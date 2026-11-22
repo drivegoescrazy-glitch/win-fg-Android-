@@ -724,12 +724,20 @@ public final class OverlayService extends Service {
         main.post(() -> {
             if (hud != null) {
                 hud.setVisibility(View.VISIBLE);
-                hud.setText(mirror ? out + " FPS · MIRROR" : out + " FPS");
+                // Left = what the game itself renders, right = what the panel gets
+                // after frame generation. Mirror mode has no right-hand number.
+                hud.setText(mirror || base <= 0
+                        ? out + " FPS"
+                        : base + "  \u2502  " + out + " FPS");
             }
             if (hudDetail != null) {
                 hudDetail.setVisibility(View.VISIBLE);
-                String detail = base > 0 ? base + " \u2192 " + out + "  ·  " : "";
-                detail += (out > 0 ? String.format(java.util.Locale.US, "%.1f ms", 1000f / out) : "-- ms");
+                String detail = mirror || base <= 0
+                        ? "output"
+                        : "source \u2502 framegen";
+                detail += out > 0
+                        ? String.format(java.util.Locale.US, "  ·  %.1f ms", 1000f / out)
+                        : "  ·  -- ms";
                 if (!mirror && out > 0 && base > 0 && out > base + 3) {
                     detail += "  ·  +" + (out - base) + " generated";
                 }

@@ -123,29 +123,50 @@ void main() {
         return;
     }
 
-    // The two warped hypotheses.
-    vec2 pA = uv - alpha        * F01;
-    vec2 pB = uv - (1.0 - alpha) * F10;
-    vec3 C0 = texture(uPrev, pA).rgb;
-    vec3 C1 = texture(uCurr, pB).rgb;
+    // ── Motion-boundary detector (flow variance) ─────────────────────────────
+    // A 1/8-res field upsampled bilinearly bleeds across motion boundaries, and
+    // that is exactly where naive blending ghosts. The local variance of the
+    // field is a direct measure of "this pixel sits on a boundary".
+    vec2 fR = texture(uFlowBwd, uv + vec2(invDim.x, 0.0)).xy * fs * invDim;
+    vec2 fL = texture(uFlowBwd, uv - vec2(invDim.x, 0.0)).xy * fs * invDim;
+    vec2 fD = texture(uFlowBwd, uv + vec2(0.0, invDim.y)).xy * fs * invDim;
+    vec2 fU = texture(uFlowBwd, uv - vec2(0.0, invDim.y)).xy * fs * invDim;
+    float fvarPx = 0.25 * (length(fR - F01) + length(fL - F01)
+                         + length(fD - F01) + length(fU - F01)) / max(invDim.x, 1e-6);
+    float cohMask = 1.0 - smoothstep(0.6, 4.0, fvarPx);
 
-    // Agreement of the hypotheses: where the field is right they nearly match.
-    float photo = exp(-photoScale * abs(luma(C0) - luma(C1)));
+    // ── Occlusion is not the same failure as disagreement ─────────────────────
+    // Multiplying two confidences conflates "the search failed" with "this pixel
+    // is hidden in one of the two frames". They need opposite handling: a failed
+    // search should freeze, a disocclusion should take the seeing frame only.
+    float mismatch = length(fbResid) / max(length(F01), invDim.x);
+    float occl     = smoothstep(0.35, 1.0, mismatch);
 
-    // Blend, biased by temporal proximity (the nearer frame carries more truth).
-    float tau0  = max(1.0 - alpha, 1e-4);
-    float tau1  = max(alpha,       1e-4);
-    vec3  interp = (C0 * tau0 + C1 * tau1) / (tau0 + tau1);
+    // ── Candidates ───────────────────────────────────────────────────────────
+    // Per-pixel sample time: bias towards the frame whose flow is more confident.
+    float a  = clamp(alpha + 0.25 * (sBwd.w - sFwd.w), 0.05, 0.95);
+    vec2  pA = uv - a         * F01;
+    vec2  pB = uv - (1.0 - a) * F10;
+    vec3  C0 = texture(uPrev, pA).rgb;
+    vec3  C1 = texture(uCurr, pB).rgb;
 
-    // Reprojection of the temporally nearer REAL frame: one source, so it cannot
-    // ghost two edges on top of each other.
     bool nearPrev = alpha < 0.5;
     vec3 reproj   = nearPrev ? C0 : C1;
     vec3 stillRaw = nearPrev ? texture(uPrev, uv).rgb : texture(uCurr, uv).rgb;
 
-    // Trust the blend only when the field is coherent and the hypotheses agree.
-    float w   = clamp(consist * photo, 0.0, 1.0);
-    vec3  col = mix(reproj, interp, w);
+    // Median of three candidates (the two warps and the unwarped nearer frame):
+    // one wrong vector cannot survive a median, which removes isolated bad-vector
+    // pixels without a second pass.
+    vec3 lo  = min(C0, C1);
+    vec3 hi  = max(C0, C1);
+    vec3 med = clamp(stillRaw, lo, hi);
+
+    float photo = exp(-photoScale * abs(luma(C0) - luma(C1)));
+
+    // Trust the blend only when the field is coherent, agreeing and unoccluded.
+    float w   = clamp(consist * photo * cohMask, 0.0, 1.0);
+    w *= 1.0 - 0.85 * occl;
+    vec3  col = mix(reproj, med, w);
 
     // No usable motion at all (flat region, failed search): warp nothing.
     float mag   = max(length(F01), length(F10));
@@ -165,15 +186,27 @@ void main() {
                       + texture(uCurr, uv + vec2(0.0, invDim.y)).rgb
                       + texture(uCurr, uv - vec2(0.0, invDim.y)).rgb);
     vec3 edge = sameCurr - blur;
+    // Gradient clamp: bound the amount of contrast this may add, so a strong edge
+    // cannot produce the bright halo that unsharp masking is notorious for.
+    float gmax = max(max(abs(edge.r), abs(edge.g)), abs(edge.b));
+    edge *= min(1.0, 0.06 / max(gmax, 1e-4));
     // Only where the interpolated (not reprojected) result was actually used, and
-    // squared so weakly-trusted pixels get almost none of it. Applying edge detail
-    // from the current frame to a reprojected pixel invents detail that is not
-    // there — that was visible as a halo crawling along moving edges.
+    // squared so weakly-trusted pixels get almost none of it.
     col += 0.22 * edge * (w * w) * (1.0 - gui);
 
     // GUI protection applied as a weight rather than a branch.
     col = mix(col, sameCurr, gui);
-    col = clamp(col, 0.0, 1.0);
+
+    // ── Safety net ──────────────────────────────────────────────────────────
+    // If the result has drifted far from the nearer real frame, the synthesis is
+    // wrong at this pixel and the real frame is always the defensible answer.
+    float drift = abs(luma(col) - luma(stillRaw));
+    col = mix(col, stillRaw, smoothstep(0.18, 0.45, drift));
+
+    // Dither before the 8-bit store: banding in flat gradients is otherwise
+    // indistinguishable from a synthesis artefact.
+    float dith = fract(sin(dot(vec2(gid), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+    col = clamp(col + dith / 255.0, 0.0, 1.0);
 
     imageStore(uOut, gid, vec4(col, 1.0));
 }
