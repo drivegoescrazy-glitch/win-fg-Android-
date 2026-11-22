@@ -9,6 +9,9 @@ on:
       asset:
         description: Repository-relative asset path
         required: true
+      ref:
+        description: Git ref containing the asset (defaults to the release tag)
+        required: false
 
 permissions:
   contents: write
@@ -19,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.ref || inputs.tag }}
 
       - name: Attach asset to release
         env:
