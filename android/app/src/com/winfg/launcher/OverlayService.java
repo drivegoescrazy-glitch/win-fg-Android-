@@ -36,6 +36,7 @@ import android.view.TextureView;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -133,15 +134,19 @@ public final class OverlayService extends Service {
     private boolean watchdogRunning;
     private boolean frameLoopRunning;
     private Choreographer.FrameCallback frameCallback;
-    /** On-overlay status badge: proves the pipeline is live and shows the failure reason. */
+    /**
+     * On-overlay performance badge. Persistent (it used to be hidden after seven
+     * seconds and never shown again, which is why it looked like it never appeared),
+     * styled like the Steam in-game FPS counter: a small translucent panel with the
+     * presented rate large and the source rate / frame time underneath.
+     */
     private TextView hud;
+    private TextView hudDetail;
     private long hudWindowStart;
     private int hudFrames;
     private boolean rendererRetried;
     private boolean rendererLost;
-    private final Runnable hideHud = () -> {
-        if (hud != null) hud.setVisibility(View.GONE);
-    };
+    private final Runnable hideHud = () -> { /* the badge is intentionally permanent */ };
 
     public static boolean isRunning() {
         return running;
@@ -477,20 +482,43 @@ public final class OverlayService extends Service {
         // Small status badge over the game. When the overlay dies there is otherwise no
         // way to see why on the device itself: the foreground notification is removed
         // with the service and logcat needs adb.
+        // Steam-style counter: translucent rounded panel, monospace, presented rate
+        // large, source rate and frame time small underneath.
+        LinearLayout badge = new LinearLayout(host);
+        badge.setOrientation(LinearLayout.VERTICAL);
+        android.graphics.drawable.GradientDrawable bg =
+                new android.graphics.drawable.GradientDrawable();
+        bg.setColor(0xB4000000);
+        bg.setCornerRadius(10f);
+        bg.setStroke(1, 0x33FFFFFF);
+        badge.setBackground(bg);
+        badge.setPadding(30, 18, 30, 18);
+
         hud = new TextView(host);
+        hud.setTextColor(0xFFFFFFFF);
+        hud.setTextSize(19f);
+        hud.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.BOLD);
+        hud.setIncludeFontPadding(false);
         hud.setText(settings != null && settings.mirrorOnly
-                ? "Win-FG mirror only · no frame generation" : "Win-FG starting…");
-        hud.setTextColor(Color.WHITE);
-        hud.setTextSize(12f);
-        hud.setPadding(28, 14, 28, 14);
-        hud.setBackgroundColor(0x99000000);
+                ? "-- MIRROR" : "-- FPS");
+
+        hudDetail = new TextView(host);
+        hudDetail.setTextColor(0xB3FFFFFF);
+        hudDetail.setTextSize(11f);
+        hudDetail.setTypeface(android.graphics.Typeface.MONOSPACE);
+        hudDetail.setIncludeFontPadding(false);
+        hudDetail.setText(settings != null && settings.mirrorOnly
+                ? "frame generation off" : "starting engine");
+
+        badge.addView(hud);
+        badge.addView(hudDetail, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
         FrameLayout.LayoutParams hudParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP | Gravity.START);
-        hudParams.setMargins(32, 32, 0, 0);
-        overlayView.addView(hud, hudParams);
+        hudParams.setMargins(28, 28, 0, 0);
+        overlayView.addView(badge, hudParams);
         main.removeCallbacks(hideHud);
-        main.postDelayed(hideHud, 7000);
 
         int type = Build.VERSION.SDK_INT >= 26
                 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -679,7 +707,7 @@ public final class OverlayService extends Service {
         if (hudWindowStart == 0) hudWindowStart = now;
         hudFrames++;
         long elapsed = now - hudWindowStart;
-        if (elapsed < 1000) return;
+        if (elapsed < 500) return;
         int fps = (int) (hudFrames * 1000 / Math.max(1, elapsed));
         lastFps = fps;
         long capElapsed = now - captureWindowStart;
@@ -688,12 +716,24 @@ public final class OverlayService extends Service {
             captureWindowFrames = 0;
             captureWindowStart = now;
         }
+        final int base = lastBaseFps;
+        final int out = fps;
         hudFrames = 0;
         hudWindowStart = now;
+        final boolean mirror = settings != null && settings.mirrorOnly;
         main.post(() -> {
-            if (hud != null && hud.getVisibility() == View.VISIBLE) {
-                hud.setText((settings != null && settings.mirrorOnly
-                        ? "Win-FG mirror · " : "Win-FG 2× · ") + fps + " fps");
+            if (hud != null) {
+                hud.setVisibility(View.VISIBLE);
+                hud.setText(mirror ? out + " FPS · MIRROR" : out + " FPS");
+            }
+            if (hudDetail != null) {
+                hudDetail.setVisibility(View.VISIBLE);
+                String detail = base > 0 ? base + " \u2192 " + out + "  ·  " : "";
+                detail += (out > 0 ? String.format(java.util.Locale.US, "%.1f ms", 1000f / out) : "-- ms");
+                if (!mirror && out > 0 && base > 0 && out > base + 3) {
+                    detail += "  ·  +" + (out - base) + " generated";
+                }
+                hudDetail.setText(detail);
             }
         });
     }
@@ -816,7 +856,7 @@ public final class OverlayService extends Service {
         if (st[2] > 0 && st[3] == 0 && st[4] == 0) return "waiting for a second frame";
         if (st[3] > 0) return "no spare swapchain image";
         if (st[4] > 0) return "interval " + Math.abs(st[7]) + " ms < "
-                + (st[8] * 18 / 10) + " ms (source already at panel rate)";
+                + (st[8] * 5 / 4) + " ms (source already at panel rate)";
         if (st[5] > 0) return "spare image acquire failed";
         return null;
     }
@@ -869,6 +909,7 @@ public final class OverlayService extends Service {
             main.removeCallbacks(hideHud);
             hud.setText(text);
             hud.setVisibility(View.VISIBLE);
+            if (hudDetail != null) hudDetail.setVisibility(View.GONE);
         });
     }
 

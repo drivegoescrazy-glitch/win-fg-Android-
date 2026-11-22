@@ -85,6 +85,18 @@ void main() {
 
     float conf = clamp(min(sBwd.w, sFwd.w), 0.0, 1.0);
 
+    // Confidence dilation. The flow is solved at 1/8 resolution and upsampled, so
+    // its confidence dips in thin seams along motion boundaries even where the
+    // field is perfectly usable. Those dips show up as one-pixel sparkle in the
+    // generated frame. Taking half of the strongest neighbour keeps a seam inside
+    // the coherent region instead of punching a hole in it.
+    float confN = max(
+            max(texture(uFlowBwd, uv + vec2(invDim.x, 0.0)).w,
+                texture(uFlowBwd, uv - vec2(invDim.x, 0.0)).w),
+            max(texture(uFlowBwd, uv + vec2(0.0, invDim.y)).w,
+                texture(uFlowBwd, uv - vec2(0.0, invDim.y)).w));
+    conf = max(conf, 0.5 * clamp(confN, 0.0, 1.0));
+
     // Forward/backward consistency: F01 and F10 must cancel where both are right.
     vec2  fbResid = F01 + texture(uFlowFwd, uv + F01).xy * fs * invDim;
     float denom   = length(F01) + length(F10) + 1.5 * invDim.x;
@@ -101,7 +113,12 @@ void main() {
     vec3  samePrev = texture(uPrev, uv).rgb;
     float staticDiff = abs(luma(sameCurr) - luma(samePrev));
     float motionPx   = max(length(F01), length(F10)) / max(invDim.x, 1e-6);
-    if (staticDiff < 0.02 && motionPx < 1.0) {
+    // Soft, never binary. A hard cut flipped individual pixels between "verbatim"
+    // and "warped" from one generated frame to the next, which reads as flicker
+    // along UI edges and on subtle gradients.
+    float gui = smoothstep(0.045, 0.006, staticDiff)
+              * smoothstep(2.5, 0.4, motionPx);
+    if (gui > 0.999) {
         imageStore(uOut, gid, vec4(sameCurr, 1.0));
         return;
     }
@@ -148,7 +165,14 @@ void main() {
                       + texture(uCurr, uv + vec2(0.0, invDim.y)).rgb
                       + texture(uCurr, uv - vec2(0.0, invDim.y)).rgb);
     vec3 edge = sameCurr - blur;
-    col += 0.22 * edge * w;   // only where the blend was trusted
+    // Only where the interpolated (not reprojected) result was actually used, and
+    // squared so weakly-trusted pixels get almost none of it. Applying edge detail
+    // from the current frame to a reprojected pixel invents detail that is not
+    // there — that was visible as a halo crawling along moving edges.
+    col += 0.22 * edge * (w * w) * (1.0 - gui);
+
+    // GUI protection applied as a weight rather than a branch.
+    col = mix(col, sameCurr, gui);
     col = clamp(col, 0.0, 1.0);
 
     imageStore(uOut, gid, vec4(col, 1.0));
