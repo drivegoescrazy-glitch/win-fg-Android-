@@ -51,4 +51,15 @@ if(ANDROID)
   find_library(dl-lib dl)
   target_link_libraries(winfg_overlay ${android-lib} ${nativewindow-lib}
                         ${vulkan-lib} ${dl-lib} ${log-lib})
+
+  # ---- ZeroFG (Apache-2.0) — the frame-generation engine ---------------------
+  # ZeroFG records the generated frame into a command buffer we own; it never
+  # submits, waits or presents, so it drops into this overlay's existing capture
+  # path. Shaders ship prebuilt, so the build needs only the Vulkan headers.
+  set(ZEROFG_VULKAN_HEADERS_DIR "${VULKAN_INCLUDE}" CACHE PATH "" FORCE)
+  set(ZEROFG_PREBUILT_SHADERS "ON" CACHE STRING "" FORCE)
+  add_subdirectory(third_party/zerofg ${CMAKE_BINARY_DIR}/zerofg)
+  target_compile_features(winfg_overlay PRIVATE cxx_std_20)
+  target_include_directories(winfg_overlay PRIVATE third_party/zerofg/include)
+  target_link_libraries(winfg_overlay zerofg::zerofg)
 endif()

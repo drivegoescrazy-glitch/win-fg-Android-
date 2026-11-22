@@ -24,8 +24,14 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_android.h>
 
+#include <memory>
+
 #include "config.hpp"
 #include "framegen.hpp"
+// ZeroFG is included at file scope, never inside the anonymous namespace below:
+// its symbols are external, and an anonymous-namespace declaration makes every
+// one of them undefined at link time.
+#include "zerofg/zerofg.h"
 #include "vk_dispatch.hpp"
 
 #include <algorithm>
@@ -146,6 +152,10 @@ void installSignalHandlers(const char* dir) {
     LOGI("native crash handler armed at %s", g_crashPath);
 }
 
+// ZeroFG's independent contexts: a frame context may not be reused until the
+// submission that contained its previous Interpolate has completed.
+static constexpr uint32_t kZfgContexts = 4;
+
 struct Image {
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory mem = VK_NULL_HANDLE;
@@ -193,6 +203,15 @@ public:
     void destroy();
 
 private:
+    bool createZeroFg();
+    std::unique_ptr<zerofg::Interpolator> zfg_;
+    bool zfgReady_ = false;
+    bool api13_ = false;        // device is Vulkan 1.3 with synchronization2
+    bool ssief_ = false;        // shaderStorageImageExtendedFormats enabled
+    uint32_t deviceApi_ = VK_API_VERSION_1_1;
+    uint32_t zfgCtx_ = 0;
+    uint64_t zfgSeq_ = 1;
+
     bool createInstance(ANativeWindow* window);
     bool pickDevice();
     bool createDevice();
@@ -312,7 +331,15 @@ bool Renderer::createInstance(ANativeWindow* window) {
     app.applicationVersion = 1;
     app.pEngineName = "win-fg";
     app.engineVersion = 1;
-    app.apiVersion = VK_API_VERSION_1_1;
+    // ZeroFG needs an effective 1.3 device, so ask for 1.3 when the loader and
+    // driver allow it. Clamped, never assumed: a 1.1-only driver still starts
+    // and simply keeps the built-in engine.
+    uint32_t instApi = VK_API_VERSION_1_1;
+    auto enumVer = reinterpret_cast<PFN_vkEnumerateInstanceVersion>(
+            vkGetInstanceProcAddr(nullptr, "vkEnumerateInstanceVersion"));
+    if (enumVer != nullptr && enumVer(&instApi) != VK_SUCCESS) instApi = VK_API_VERSION_1_1;
+    if (instApi > VK_API_VERSION_1_3) instApi = VK_API_VERSION_1_3;
+    app.apiVersion = instApi;
 
     const char* extensions[] = {
             VK_KHR_SURFACE_EXTENSION_NAME,
@@ -383,6 +410,8 @@ bool Renderer::pickDevice() {
         queueFamily_ = qf;
         VkPhysicalDeviceProperties props{};
         vkGetPhysicalDeviceProperties(physical_, &props);
+        deviceApi_ = props.apiVersion > VK_API_VERSION_1_3 ? VK_API_VERSION_1_3
+                                                          : props.apiVersion;
         LOGI("device: %s api=%u.%u.%u", props.deviceName,
              VK_API_VERSION_MAJOR(props.apiVersion),
              VK_API_VERSION_MINOR(props.apiVersion),
@@ -419,7 +448,33 @@ bool Renderer::createDevice() {
     qci.queueCount = 1;
     qci.pQueuePriorities = &priority;
 
+    // ── ZeroFG's device requirements ────────────────────────────────────────
+    // It wants a 1.3 device with synchronization2 and storage-image extended
+    // formats actually ENABLED (it reads the enabled set, not the hardware's
+    // capability). Both are additive here: our own binds/barriers use the
+    // 1.0/1.1 entry points and behave identically with sync2 enabled.
+    VkPhysicalDeviceFeatures2 feats2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+    VkPhysicalDeviceVulkan13Features f13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    if (deviceApi_ >= VK_API_VERSION_1_3) {
+        VkPhysicalDeviceVulkan13Features avail{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+        VkPhysicalDeviceFeatures2 q{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        q.pNext = &avail;
+        // Loaded through the instance: the NDK's libvulkan stub exports only the
+        // 1.0 entry points, so a direct call does not link on every platform.
+        auto getFeatures2 = reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+                vkGetInstanceProcAddr(instance_, "vkGetPhysicalDeviceFeatures2"));
+        if (getFeatures2 != nullptr) getFeatures2(physical_, &q);
+        ssief_ = (q.features.shaderStorageImageExtendedFormats == VK_TRUE);
+        api13_ = (avail.synchronization2 == VK_TRUE);
+        f13.synchronization2 = api13_ ? VK_TRUE : VK_FALSE;
+        feats2.features.shaderStorageImageExtendedFormats = ssief_ ? VK_TRUE : VK_FALSE;
+        feats2.pNext = &f13;
+    }
+    LOGI("device features for ZeroFG: api13=%d sync2=%d storage_ext=%d",
+         (int)(deviceApi_ >= VK_API_VERSION_1_3), (int)api13_, (int)ssief_);
+
     VkDeviceCreateInfo ci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+    ci.pNext = (deviceApi_ >= VK_API_VERSION_1_3) ? &feats2 : nullptr;
     ci.queueCreateInfoCount = 1;
     ci.pQueueCreateInfos = &qci;
     ci.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
@@ -464,6 +519,54 @@ bool Renderer::createDevice() {
     LOAD(CreateFence); LOAD(DestroyFence); LOAD(WaitForFences); LOAD(ResetFences);
     LOAD(CreateSemaphore); LOAD(DestroySemaphore);
 #undef LOAD
+    return true;
+}
+
+bool Renderer::createZeroFg() {
+    zfg_.reset();
+    zfgReady_ = false;
+    if (!frameGen_ || !api13_) {
+        LOGI("ZeroFG not created (frameGen=%d api13=%d) — built-in engine only",
+             (int)frameGen_, (int)api13_);
+        return false;
+    }
+
+    zerofg::CreateInfo info;
+    info.vulkan.instance = instance_;
+    info.vulkan.physical_device = physical_;
+    info.vulkan.device = device_;
+    info.vulkan.get_instance_proc_addr = vkGetInstanceProcAddr;
+    info.mode = zerofg::Mode::kZero;         // the 1.2 engine
+    info.backend = zerofg::Backend::kAuto;   // the device's fast paths
+    info.frame_context_count = kZfgContexts;
+    info.capabilities.effective_api_version = deviceApi_;
+    info.capabilities.synchronization2_enabled = true;
+    info.capabilities.shader_storage_image_extended_formats_enabled = ssief_;
+
+    zerofg::Status st = zerofg::Status::kSuccess;
+    zfg_ = zerofg::Interpolator::Create(info, &st);
+    if (!zfg_) {
+        // The portable form uses no optional feature; same logical result.
+        info.backend = zerofg::Backend::kCompat;
+        zfg_ = zerofg::Interpolator::Create(info, &st);
+    }
+    if (!zfg_) {
+        LOGW("ZeroFG unavailable (status %d) — using the built-in engine", (int)st);
+        return false;
+    }
+    st = zfg_->Resize(extent_.width, extent_.height,
+                      VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM);
+    if (st != zerofg::Status::kSuccess) {
+        LOGW("ZeroFG resize failed at %ux%u (status %d) — built-in engine",
+             extent_.width, extent_.height, (int)st);
+        zfg_.reset();
+        return false;
+    }
+    zfgSeq_ = 1;
+    zfgCtx_ = 0;
+    zfgReady_ = true;
+    LOGI("ZeroFG ready: %ux%u RGBA8 -> RGBA8, mode=kZero, backend=%d, contexts=%u",
+         extent_.width, extent_.height, (int)info.backend, kZfgContexts);
     return true;
 }
 
@@ -662,6 +765,16 @@ void Renderer::resize(int width, int height) {
     }
     if (fgReady_) fg_.onResize(extent_, VK_FORMAT_R8G8B8A8_UNORM, true);
     createOffscreen();
+    if (zfg_) {
+        zerofg::Status st = zfg_->Resize(extent_.width, extent_.height,
+                                         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UNORM);
+        if (st != zerofg::Status::kSuccess) {
+            LOGW("ZeroFG resize failed on %ux%u (status %d) — built-in engine",
+                 extent_.width, extent_.height, (int)st);
+            zfg_.reset();
+            zfgReady_ = false;
+        }
+    }
 }
 
 bool Renderer::init(ANativeWindow* window, int width, int height, float refreshHz,
@@ -703,6 +816,8 @@ bool Renderer::init(ANativeWindow* window, int width, int height, float refreshH
     }
     stage("create offscreen");
     if (!createOffscreen()) return false;
+    stage("ZeroFG init");
+    createZeroFg();   // failure is not fatal: the built-in engine stays armed
     stage("create sync");
 
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
@@ -1010,7 +1125,7 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     const VkImage realImage = swapImages_[realIndex];
     const VkImage spareImage = haveSpare ? swapImages_[spareIndex] : VK_NULL_HANDLE;
 
-    if (fgReady_ && prevValid_ && haveSpare) {
+    if ((fgReady_ || zfgReady_) && prevValid_ && haveSpare) {
         stage("frame record");
         barrier(cmd_, generated_.image, VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_SHADER_WRITE_BIT,
@@ -1019,7 +1134,45 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
         // two captured frames. 0.35 put it closer to the older frame, leaving gaps of
         // 0.35 and 0.65 of a frame interval — uneven cadence for no benefit, since the
         // insert path already paces the pair around the midpoint.
-        fg_.record(cmd_, prev_.view, curr_.view, generated_.view, 0.5f, 0);
+        // ── ZeroFG generates the frame when it is available ─────────────────
+        // Same contract as the built-in engine: it records into cmd_ and never
+        // submits, waits or presents. Inputs are declared in the layout they are
+        // already in; the output is GENERAL, which is what follows here anyway.
+        const bool zfgAttempt = zfgReady_ && zfg_.get() != nullptr;
+        zerofg::Status zst = zerofg::Status::kSuccess;
+        if (zfgAttempt) {
+            zerofg::Image zp{};
+            zp.image = prev_.image; zp.view = prev_.view;
+            zp.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            zp.format = VK_FORMAT_R8G8B8A8_UNORM;
+            zp.width = extent_.width; zp.height = extent_.height;
+            zp.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            zp.creation_facts_known = true;
+            zp.sequence = zfgSeq_;
+            zerofg::Image zc = zp;
+            zc.image = curr_.image; zc.view = curr_.view;
+            zc.sequence = ++zfgSeq_;
+            zerofg::Image zo{};
+            zo.image = generated_.image; zo.view = generated_.view;
+            zo.layout = VK_IMAGE_LAYOUT_GENERAL;
+            zo.format = VK_FORMAT_R8G8B8A8_UNORM;
+            zo.width = extent_.width; zo.height = extent_.height;
+            zo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            zo.creation_facts_known = true;
+            zst = zfg_->Interpolate(cmd_, zfgCtx_, zp, zc, 0.5f, zo);
+            zfgCtx_ = (zfgCtx_ + 1) % kZfgContexts;
+            if (zst != zerofg::Status::kSuccess) {
+                // Its recorded commands may be partial, so nothing else touches
+                // generated_ this frame: it keeps the previous generated picture
+                // (a repeat, never garbage) and the next frame uses the fallback.
+                LOGW("ZeroFG interpolate failed (status %d) — built-in engine next frame",
+                     (int)zst);
+                zfgReady_ = false;
+            }
+        }
+        if (!zfgAttempt && fgReady_)
+            fg_.record(cmd_, prev_.view, curr_.view, generated_.view, 0.5f, 0);
         barrier(cmd_, generated_.image, VK_IMAGE_LAYOUT_GENERAL,
                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
