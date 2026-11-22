@@ -144,6 +144,10 @@ public final class OverlayService extends Service {
     private TextView hudDetail;
     private long hudWindowStart;
     private int hudFrames;
+    // Per-window proof of the insert path: captures in, presents out, how many were
+    // generated, and why each skipped capture was skipped.
+    private long capCount, presentsCount, genCount;
+    private final long[] skipReasons = new long[6];
     private boolean rendererRetried;
     private boolean rendererLost;
     private final Runnable hideHud = () -> { /* the badge is intentionally permanent */ };
@@ -703,6 +707,43 @@ public final class OverlayService extends Service {
     }
 
     /**
+     * Per-capture proof for the session log: how many frames reached the swapchain
+     * and, when only one did, the engine's own reason code for the skip. The first
+     * 60 captures are written one per line so a two-second session is enough to see
+     * a 2-per-capture cadence; after that a 5 s summary keeps the log bounded.
+     */
+    private void logCapture(int presented) {
+        capCount++;
+        presentsCount += Math.max(1, presented);
+        int reason = 0;
+        int[] st = null;
+        synchronized (rendererLock) {
+            if (renderer != null) st = renderer.stats();
+        }
+        if (st != null && st.length > 9) reason = st[9];
+        if (presented >= 2) {
+            genCount++;
+        } else if (reason >= 0 && reason < skipReasons.length) {
+            skipReasons[reason]++;
+        }
+        if (capturedFrames <= 60) {
+            note("capture " + capturedFrames + ": presents=" + Math.max(1, presented)
+                    + (presented >= 2 ? " (generated)" : " (passthrough, " + reasonName(reason) + ")"));
+        }
+    }
+
+    private static String reasonName(int reason) {
+        switch (reason) {
+            case 1: return "frame generation off";
+            case 2: return "first frame";
+            case 3: return "no spare image";
+            case 4: return "interval below threshold";
+            case 5: return "spare acquire failed";
+            default: return "ok";
+        }
+    }
+
+    /**
      * @param frames frames that reached the swapchain for this capture: 2 when a
      *               generated frame was inserted, 1 for passthrough. Counting one
      *               per capture made the output rate unable to ever exceed the
@@ -849,6 +890,17 @@ public final class OverlayService extends Service {
             if (why != null) status = status + " · " + why;
             updateNotification("Screen capture + frame generation · " + status);
             note("fps " + status);
+            if (capCount > 0) {
+                note(String.format(java.util.Locale.US,
+                        "presents %d captures → %d presents, %d generated (%.2fx)"
+                        + " · skipped fgOff=%d first=%d noSpare=%d interval=%d acquire=%d",
+                        capCount, presentsCount, genCount,
+                        presentsCount / (float) Math.max(1, capCount),
+                        skipReasons[1], skipReasons[2], skipReasons[3],
+                        skipReasons[4], skipReasons[5]));
+                capCount = 0; presentsCount = 0; genCount = 0;
+                java.util.Arrays.fill(skipReasons, 0);
+            }
         }
     }
 
@@ -1145,6 +1197,7 @@ public final class OverlayService extends Service {
                 // overlay surface while Vulkan was still initialising.
                 if (targetPackage != null) main.post(this::launchTarget);
                 countPresentedFrame(presented);
+                logCapture(presented);
             } else if (presented < 0 && !stopping && !rendererLost) {
                 // The driver reported the swapchain gone; rebuild the window and the
                 // renderer instead of silently capturing into nothing.

@@ -169,9 +169,9 @@ public:
     int lastPresents() const { return lastPresents_; }
 
     void readStats(int32_t* out, int n) const {
-        const int32_t v[9] = { stGenerated_, stFgOff_, stFirst_, stNoSpare_, stNoInterval_,
-                               stSpareFail_, stPass_, stDeltaMs_, stVsyncMs_ };
-        for (int i = 0; i < 9 && i < n; ++i) out[i] = v[i];
+        const int32_t v[10] = { stGenerated_, stFgOff_, stFirst_, stNoSpare_, stNoInterval_,
+                                stSpareFail_, stPass_, stDeltaMs_, stVsyncMs_, lastReason_ };
+        for (int i = 0; i < 10 && i < n; ++i) out[i] = v[i];
     }
     void destroy();
 
@@ -230,6 +230,9 @@ private:
     int32_t stDeltaMs_ = 0, stVsyncMs_ = 0;
     /** Presents performed by the last submit: 2 with a generated frame, else 1. */
     int32_t lastPresents_ = 1;
+    /** Why this capture produced only one present: 0 generated, 1 fg off, 2 first
+     *  frame, 3 no spare image, 4 interval below threshold, 5 spare acquire failed. */
+    int32_t lastReason_ = 0;
     uint64_t presented_ = 0;
 
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
@@ -656,17 +659,25 @@ bool Renderer::init(ANativeWindow* window, int width, int height, float refreshH
     if (frameGen_) {
         stage("framegen init");
         if (!fg_.init(&dd_, &id_, physical_, device_, queueFamily_, queue_)) {
-            LOGE("FrameGen init failed");
-            return false;
+            // Degrade, never die: an engine that cannot initialise must still leave
+            // the user with a working (mirror) overlay rather than no overlay at all.
+            LOGE("FrameGen init failed — running mirror-only");
+            stage("mirror fallback (framegen init)");
+            fgReady_ = false;
+        } else {
+            fgReady_ = true;
+            fg_.configure(cfg_);
         }
-        fgReady_ = true;
-        fg_.configure(cfg_);
     }
     stage("create swapchain");
     if (!createSwapchain()) return false;
-    if (frameGen_) {
+    if (frameGen_ && fgReady_) {
         stage("framegen resize");
-        if (!fg_.onResize(extent_, VK_FORMAT_R8G8B8A8_UNORM)) return false;
+        if (!fg_.onResize(extent_, VK_FORMAT_R8G8B8A8_UNORM)) {
+            LOGE("FrameGen resize failed — running mirror-only");
+            stage("mirror fallback (framegen resize)");
+            fgReady_ = false;
+        }
     }
     stage("create offscreen");
     if (!createOffscreen()) return false;
@@ -1105,6 +1116,8 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     // Java side used to count one per submit, so the displayed output rate could
     // never exceed the capture rate no matter how well insertion worked.
     lastPresents_ = haveSpare ? 2 : 1;
+    lastReason_   = haveSpare ? 0 : (fgOff ? 1 : firstFrame ? 2 : noSpareImg ? 3
+                                 : noInterval ? 4 : 5);
     if ((presented_ & 0x3f) == 0) {
         LOGI("frame %llu %dx%d%s", (unsigned long long)timestampNs, w, h,
              haveSpare ? " 2x" : " passthrough");
@@ -1248,9 +1261,9 @@ Java_com_winfg_launcher_OverlayRenderer_nativeStats(
         JNIEnv* env, jclass, jlong handle, jintArray out) {
     if (handle == 0 || out == nullptr) return;
     Renderer* renderer = reinterpret_cast<Renderer*>(handle);
-    int32_t v[9] = {0};
-    renderer->readStats(v, 9);
-    env->SetIntArrayRegion(out, 0, 9, reinterpret_cast<const jint*>(v));
+    int32_t v[10] = {0};
+    renderer->readStats(v, 10);
+    env->SetIntArrayRegion(out, 0, 10, reinterpret_cast<const jint*>(v));
 }
 
 extern "C" JNIEXPORT void JNICALL

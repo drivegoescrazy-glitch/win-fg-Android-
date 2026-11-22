@@ -199,17 +199,39 @@ bool FrameGen::onResize(VkExtent2D extent, VkFormat /*colorFormat*/, bool force)
     // are the copy SOURCE (TRANSFER_SRC).
     const VkImageUsageFlags flowUsage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     const VkImageUsageFlags regUsage  = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    pyrA_.resize(kLevels); pyrB_.resize(kLevels); flowLvl_.resize(kLevels);
-    for (int l = 0; l < kLevels; ++l) {
-        VkExtent2D e = levelExtent(extent, l);
-        if (!makeImage(pyrA_[l], e, VK_FORMAT_R32_SFLOAT, lumaUsage)) return false;
-        if (!makeImage(pyrB_[l], e, VK_FORMAT_R32_SFLOAT, lumaUsage)) return false;
-        if (!makeImage(flowLvl_[l], e, VK_FORMAT_R16G16B16A16_SFLOAT, flowUsage)) return false;
+    // Luma pyramids are the largest images in the pipeline and 14 of them exist, so
+    // their format is the single biggest bandwidth lever. R16 halves every pyramid
+    // read and write; on hardware that refuses R16 storage images the allocation
+    // fails and we fall back to R32 with the exact same code path.
+    auto allocLuma = [&](VkFormat lumaFmt) -> bool {
+        pyrA_.resize(kLevels); pyrB_.resize(kLevels); flowLvl_.resize(kLevels);
+        for (int l = 0; l < kLevels; ++l) {
+            VkExtent2D e = levelExtent(extent, l);
+            if (!makeImage(pyrA_[l], e, lumaFmt, lumaUsage)) return false;
+            if (!makeImage(pyrB_[l], e, lumaFmt, lumaUsage)) return false;
+            if (!makeImage(flowLvl_[l], e, VK_FORMAT_R16G16B16A16_SFLOAT, flowUsage)) return false;
+        }
+        // C1: stabilized curr luma — only the levels the dense flow reads.
+        pyrAs_.resize(kLevels);
+        for (int l = flowFinest_; l < kLevels; ++l)
+            if (!makeImage(pyrAs_[l], levelExtent(extent, l), lumaFmt, lumaUsage)) return false;
+        return true;
+    };
+    auto freeLuma = [&]() {
+        for (auto& i : pyrA_) destroyImage(i); pyrA_.clear();
+        for (auto& i : pyrB_) destroyImage(i); pyrB_.clear();
+        for (auto& i : pyrAs_) destroyImage(i); pyrAs_.clear();
+        for (auto& i : flowLvl_) destroyImage(i); flowLvl_.clear();
+    };
+
+    VkFormat lumaFormat = VK_FORMAT_R16_SFLOAT;
+    if (!allocLuma(lumaFormat)) {
+        WFG_LOGE("luma pyramid R16 allocation failed — retrying with R32");
+        freeLuma();
+        lumaFormat = VK_FORMAT_R32_SFLOAT;
+        if (!allocLuma(lumaFormat)) return false;
     }
-    // C1: stabilized curr luma — only the levels the dense flow reads (finest..coarsest).
-    pyrAs_.resize(kLevels);
-    for (int l = flowFinest_; l < kLevels; ++l)
-        if (!makeImage(pyrAs_[l], levelExtent(extent, l), VK_FORMAT_R32_SFLOAT, lumaUsage)) return false;
+    WFG_LOGI("luma pyramid format %s", lumaFormat == VK_FORMAT_R16_SFLOAT ? "R16_SFLOAT" : "R32_SFLOAT");
     if (!makeImage(flowExpA_, extent, VK_FORMAT_R16G16B16A16_SFLOAT, flowUsage)) return false;
     if (!makeImage(flowExpB_, extent, VK_FORMAT_R16G16B16A16_SFLOAT, flowUsage)) return false;
     // C2: TV-L1 ping-pong scratch at the finest solved flow level (perf_preset-driven res).

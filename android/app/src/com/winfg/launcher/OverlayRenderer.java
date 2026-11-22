@@ -58,13 +58,15 @@ public final class OverlayRenderer {
     /**
      * Why generated frames are (or are not) being inserted, straight from the engine:
      * {generated, refusedFgOff, refusedFirstFrame, refusedNoSpareImage,
-     *  refusedNoInterval, refusedSpareAcquire, passthrough, lastDeltaMs, lastVsyncMs}.
-     * lastDeltaMs is negative when the interval was below the insert threshold.
+     *  refusedNoInterval, refusedSpareAcquire, passthrough, lastDeltaMs, lastVsyncMs,
+     *  lastReason}. lastDeltaMs is negative when the interval was below the insert
+     *  threshold; lastReason is 0 when the last capture generated a frame, else
+     *  1 fg off, 2 first frame, 3 no spare image, 4 interval, 5 acquire failed.
      */
     public int[] stats() {
         long h = handle;
         if (!LOADED || h == 0) return null;
-        int[] out = new int[9];
+        int[] out = new int[10];
         try {
             nativeStats(h, out);
             return out;
