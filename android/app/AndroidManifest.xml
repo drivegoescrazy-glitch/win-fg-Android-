@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.winfg.launcher"
-    android:versionCode="9"
-    android:versionName="1.8"
+    android:versionCode="10"
+    android:versionName="1.9"
     android:installLocation="auto">
 
     <!-- targetSdk stays current. Android 12/13 has no single-app MediaProjection,
@@ -10,10 +10,9 @@
          flag; the non-SDK lookup is exempted at runtime (see OverlayService).
          Android 14+ uses the public single-app MediaProjection path. -->
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
-    <!-- versionCode 9: capture starts only once the overlay surface exists, the game
-         launches on the first presented frame, generated frames are paced to the panel
-         refresh rate instead of overfilling the swapchain, and native renderer faults
-         are written to files/win-fg/native_crash.log and shown in the app. -->
+    <!-- versionCode 10: the crash report now names the faulting module and offset plus
+         the renderer stage, and a session that crashed natively restarts in
+         capture-only mirror mode so the overlay still works. -->
 
     <!-- No-root overlay mode: draw over games and capture the display with the
          user's MediaProjection consent. No root or system layer is required. -->

@@ -458,7 +458,8 @@ public final class OverlayService extends Service {
         // way to see why on the device itself: the foreground notification is removed
         // with the service and logcat needs adb.
         hud = new TextView(host);
-        hud.setText("Win-FG starting…");
+        hud.setText(settings != null && settings.mirrorOnly
+                ? "Win-FG mirror only · no frame generation" : "Win-FG starting…");
         hud.setTextColor(Color.WHITE);
         hud.setTextSize(12f);
         hud.setPadding(28, 14, 28, 14);
@@ -597,7 +598,7 @@ public final class OverlayService extends Service {
             boolean started;
             try {
                 started = r.start(outputSurface, width, height, displayRefreshRate(),
-                        crashDir(), s);
+                        !s.mirrorOnly, crashDir(), s);
             } catch (Throwable t) {
                 Log.e(TAG, "renderer start threw", t);
                 started = false;
@@ -623,7 +624,8 @@ public final class OverlayService extends Service {
             rendererWidth = width;
             rendererHeight = height;
             Log.i(TAG, "overlay renderer started " + width + "x" + height
-                    + " @" + displayRefreshRate() + "Hz");
+                    + " @" + displayRefreshRate() + "Hz"
+                    + (s.mirrorOnly ? " mirror-only" : ""));
         }
     }
 
@@ -658,7 +660,8 @@ public final class OverlayService extends Service {
         hudWindowStart = now;
         main.post(() -> {
             if (hud != null && hud.getVisibility() == View.VISIBLE) {
-                hud.setText("Win-FG 2× · " + fps + " fps");
+                hud.setText((settings != null && settings.mirrorOnly
+                        ? "Win-FG mirror · " : "Win-FG 2× · ") + fps + " fps");
             }
         });
     }

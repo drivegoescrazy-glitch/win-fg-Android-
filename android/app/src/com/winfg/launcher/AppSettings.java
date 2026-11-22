@@ -25,6 +25,8 @@ public final class AppSettings {
     public float frEps = 0.05f;
     public int extraImages = 2;
     public boolean overlay = true;    // legacy preference; overlay now starts automatically
+    /** Capture-only overlay, used after the frame-generation renderer crashed natively. */
+    public boolean mirrorOnly = false;
 
     public static AppSettings load(Context c) {
         SharedPreferences p = c.getSharedPreferences(PREF, Context.MODE_PRIVATE);
@@ -45,6 +47,7 @@ public final class AppSettings {
         s.frEps = p.getFloat("fr_eps", s.frEps);
         s.extraImages = p.getInt("extra_images", s.extraImages);
         s.overlay = p.getBoolean("overlay", s.overlay);
+        s.mirrorOnly = p.getBoolean("mirror_only", s.mirrorOnly);
         return s;
     }
 
@@ -66,6 +69,7 @@ public final class AppSettings {
                 .putFloat("fr_eps", frEps)
                 .putInt("extra_images", extraImages)
                 .putBoolean("overlay", overlay)
+                .putBoolean("mirror_only", mirrorOnly)
                 .apply();
     }
 

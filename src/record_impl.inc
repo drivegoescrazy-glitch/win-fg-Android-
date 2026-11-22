@@ -530,6 +530,11 @@ static bool ensureScratch(FrameGen* fg, const DeviceDispatch* dd, VkDevice dev,
                           FrameGen::Img& flowRegA, FrameGen::Img& flowRegB, VkBuffer* gmSsbo,
                           int kLevels, const Config& cfg) {
     auto& S = g_scratch;
+    // A rebuild (capture size or orientation change) must release the previous UBOs
+    // and descriptor sets. Overwriting the struct used to leak ~46 sets per rebuild;
+    // after a handful the pool ran dry, AllocateDescriptorSets returned VK_NULL_HANDLE
+    // and binding that null set faults inside the driver. Reset the pool first.
+    destroyScratch(dd, dev, pool);
     S = ScratchState{};
     const auto GEN = VK_IMAGE_LAYOUT_GENERAL;
 
@@ -650,6 +655,26 @@ static bool ensureScratch(FrameGen* fg, const DeviceDispatch* dd, VkDevice dev,
     wImg(dd, dev, S.sSynth, 34, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, expA.view, samp, GEN);
     wImg(dd, dev, S.sSynth, 35, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, expB.view, samp, GEN);
 
+    // Never hand a partially allocated scratch to record(): every binding must exist,
+    // otherwise CmdBindDescriptorSets gets a null set and the driver faults.
+    bool complete = S.sLumaCurr != VK_NULL_HANDLE && S.sLumaPrev != VK_NULL_HANDLE &&
+                    S.sSynth != VK_NULL_HANDLE && S.sFlowReg0 != VK_NULL_HANDLE &&
+                    S.sFlowRegAB != VK_NULL_HANDLE && S.sFlowRegBA != VK_NULL_HANDLE;
+    for (VkDescriptorSet s : S.sFlow) complete = complete && s != VK_NULL_HANDLE;
+    for (VkDescriptorSet s : S.sDownA) complete = complete && s != VK_NULL_HANDLE;
+    for (VkDescriptorSet s : S.sDownB) complete = complete && s != VK_NULL_HANDLE;
+    for (int s = 0; s < FrameGen::kGmSlots; ++s) {
+        complete = complete && S.sExpand[s] != VK_NULL_HANDLE && S.gmUboPtr[s] != nullptr;
+        complete = complete && (!fg->gmBuffersReady() || S.sGmReduce[s] != VK_NULL_HANDLE);
+        for (int l = fg->flowFinest(); l < kLevels; ++l)
+            complete = complete && S.sGmPrewarp[s][l] != VK_NULL_HANDLE;
+    }
+    if (!complete) {
+        WFG_LOGE("framegen scratch incomplete (descriptor pool exhausted?) — interpolation skipped");
+        S.builtFor = {0, 0};
+        S.built = false;
+        return false;
+    }
     S.builtFor = ext; S.built = true;
     return true;
 }

@@ -35,6 +35,7 @@ public:
                 VkImageView outView, float alpha, uint32_t gmSlot = 0);
     void destroy();
     bool valid() const { return device_ != VK_NULL_HANDLE && ready_; }
+    bool gmBuffersReady() const { return gmBuffersReady_; }
     const Config& config() const { return cfg_; }
 
     // public so the record_impl.inc free helpers can reference them

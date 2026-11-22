@@ -48,6 +48,7 @@ if(ANDROID)
   find_library(nativewindow-lib nativewindow)
   find_library(vulkan-lib vulkan)
   find_library(log-lib log)
+  find_library(dl-lib dl)
   target_link_libraries(winfg_overlay ${android-lib} ${nativewindow-lib}
-                        ${vulkan-lib} ${log-lib})
+                        ${vulkan-lib} ${dl-lib} ${log-lib})
 endif()

@@ -48,7 +48,7 @@ Hardware H.264 decoding plus GPU optical flow is required for usable latency.
 bash android/build_apk.sh
 ```
 
-Output: `android/dist/win-fg-v1.8.apk` (versionCode 9), arm64-v8a engine, signed.
+Output: `android/dist/win-fg-v1.9.apk` (versionCode 10), arm64-v8a engine, signed.
 The script is also what CI runs on tags.
 
 ## Release key — do not lose it

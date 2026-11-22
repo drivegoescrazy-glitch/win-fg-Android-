@@ -34,9 +34,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <mutex>
-#include <unwind.h>
+#include <pthread.h>
+#include <ucontext.h>
 #include <unistd.h>
 #include <vector>
 
@@ -53,43 +56,80 @@ namespace {
 // notification, because the process (and the foreground service) dies with it.
 char g_crashPath[256];
 std::atomic<bool> g_crashHandlerInstalled{false};
+/** Names the renderer stage in progress; written into the next crash report. */
+const char* volatile g_stage = "startup";
 
-struct BacktraceState {
-    uintptr_t* frames;
-    int count;
-    int max;
-};
+void stage(const char* name) { g_stage = name; }
 
-_Unwind_Reason_Code unwindCallback(_Unwind_Context* ctx, void* arg) {
-    BacktraceState* state = static_cast<BacktraceState*>(arg);
-    uintptr_t pc = static_cast<uintptr_t>(_Unwind_GetIP(ctx));
-    if (pc != 0 && state->count < state->max) state->frames[state->count++] = pc;
-    return state->count >= state->max ? _URC_END_OF_STACK : _URC_NO_REASON;
+void writeAll(int fd, const char* text) {
+    if (fd < 0 || text == nullptr) return;
+    ssize_t ignored = write(fd, text, strlen(text));
+    (void) ignored;
 }
 
-void nativeCrashHandler(int sig) {
+/** Module + offset: absolute addresses alone are unusable after ASLR. */
+void writeFrame(int fd, const char* tag, void* address) {
+    if (address == nullptr) return;
+    Dl_info info{};
+    char line[600];
+    int n;
+    if (dladdr(address, &info) != 0 && info.dli_fname != nullptr) {
+        unsigned long offset = (unsigned long) address - (unsigned long) info.dli_fbase;
+        n = snprintf(line, sizeof line, "%s %p  %s+0x%lx\n", tag, address,
+                     info.dli_fname, offset);
+    } else {
+        n = snprintf(line, sizeof line, "%s %p  <unknown module>\n", tag, address);
+    }
+    if (n > 0) {
+        ssize_t ignored = write(fd, line, (size_t) n);
+        (void) ignored;
+    }
+}
+
+void nativeCrashHandler(int sig, siginfo_t* info, void* rawContext) {
     int fd = g_crashPath[0] ? open(g_crashPath, O_WRONLY | O_CREAT | O_APPEND, 0600) : -1;
     if (fd >= 0) {
-        char head[64];
-        int n = snprintf(head, sizeof head, "native signal %d\n", sig);
-        if (n > 0) {
-            ssize_t ignored = write(fd, head, (size_t) n);
-            (void) ignored;
-        }
-        uintptr_t frames[48];
-        BacktraceState state{frames, 0, 48};
-        // bionic's <execinfo.h> backtrace() is API 33+; the unwinder is always there.
-        _Unwind_Backtrace(unwindCallback, &state);
-        for (int i = 0; i < state.count; ++i) {
-            char line[64];
-            int len = snprintf(line, sizeof line, "  #%02d %p\n", i, (void*) frames[i]);
-            if (len > 0) {
-                ssize_t ignored = write(fd, line, (size_t) len);
-                (void) ignored;
+        char threadName[32] = "?";
+        pthread_getname_np(pthread_self(), threadName, sizeof threadName);
+        char head[256];
+        int n = snprintf(head, sizeof head,
+                         "native signal %d code=%d addr=%p thread=%s t=%ld\n",
+                         sig, info ? info->si_code : 0, info ? info->si_addr : nullptr,
+                         threadName, (long) time(nullptr));
+        if (n > 0) write(fd, head, (size_t) n);
+        writeAll(fd, "stage: ");
+        writeAll(fd, g_stage);
+        writeAll(fd, "\n");
+
+        auto* uc = static_cast<ucontext_t*>(rawContext);
+        if (uc != nullptr) {
+            // The faulting instruction itself, plus its caller. Unwinding from inside a
+            // signal handler with _Unwind_Backtrace() throws on bionic and aborts the
+            // process, which destroyed the evidence last time.
+            uintptr_t pc = uc->uc_mcontext.pc;
+            uintptr_t lr = uc->uc_mcontext.regs[30];
+            uintptr_t sp = uc->uc_mcontext.sp;
+            uintptr_t fp = uc->uc_mcontext.regs[29];
+            writeFrame(fd, "pc", (void*) pc);
+            writeFrame(fd, "lr", (void*) lr);
+            char regs[96];
+            int len = snprintf(regs, sizeof regs, "sp=%p fp=%p\n", (void*) sp, (void*) fp);
+            if (len > 0) write(fd, regs, (size_t) len);
+            // Walk the frame-pointer chain, but only inside this thread's own stack, so
+            // a corrupt frame pointer cannot fault the handler as well.
+            for (int i = 0; i < 24 && fp != 0; ++i) {
+                if ((fp & 7) != 0 || fp < sp || fp > sp + (2u << 20)) break;
+                auto* frame = reinterpret_cast<uintptr_t*>(fp);
+                uintptr_t ret = frame[1];
+                writeFrame(fd, "  bt", (void*) ret);
+                uintptr_t next = frame[0];
+                if (next <= fp) break;
+                fp = next;
             }
         }
         close(fd);
     }
+    // Restore the default action and re-raise so Android still records the crash.
     signal(sig, SIG_DFL);
     raise(sig);
 }
@@ -98,8 +138,8 @@ void installSignalHandlers(const char* dir) {
     if (g_crashHandlerInstalled.exchange(true)) return;
     snprintf(g_crashPath, sizeof g_crashPath, "%s/native_crash.log", dir);
     struct sigaction sa {};
-    sa.sa_handler = nativeCrashHandler;
-    sa.sa_flags = SA_RESETHAND | SA_ONSTACK;
+    sa.sa_sigaction = nativeCrashHandler;
+    sa.sa_flags = SA_SIGINFO | SA_RESETHAND | SA_ONSTACK;
     sigemptyset(&sa.sa_mask);
     for (int sig : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT}) sigaction(sig, &sa, nullptr);
     LOGI("native crash handler armed at %s", g_crashPath);
@@ -119,7 +159,7 @@ struct AhbImage {
 class Renderer {
 public:
     bool init(ANativeWindow* window, int width, int height, float refreshHz,
-              const winfg::Config& cfg);
+              bool frameGen, const winfg::Config& cfg);
     bool submit(AHardwareBuffer* buffer, uint64_t timestampNs);
     bool dead() const { return dead_; }
     void destroy();
@@ -162,6 +202,8 @@ private:
     winfg::FrameGen fg_{};
     winfg::Config cfg_{};
     bool fgReady_ = false;
+    /** false = mirror the capture only (frame generation crashed on this driver). */
+    bool frameGen_ = true;
     bool foreignQueue_ = false;
     /** Driver reported the surface/device gone; this session cannot present again. */
     bool dead_ = false;
@@ -564,29 +606,42 @@ void Renderer::resize(int width, int height) {
         dead_ = true;
         return;
     }
-    fg_.onResize(extent_, VK_FORMAT_R8G8B8A8_UNORM, true);
+    if (fgReady_) fg_.onResize(extent_, VK_FORMAT_R8G8B8A8_UNORM, true);
     createOffscreen();
 }
 
 bool Renderer::init(ANativeWindow* window, int width, int height, float refreshHz,
-                    const winfg::Config& cfg) {
+                    bool frameGen, const winfg::Config& cfg) {
     window_ = window;
     cfg_ = cfg;
+    frameGen_ = frameGen;
     refreshHz_ = (refreshHz > 1.0f && refreshHz < 1000.0f) ? refreshHz : 60.0f;
     extent_ = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+    stage("create instance");
     if (!createInstance(window_)) return false;
+    stage("pick device");
     if (!pickDevice()) return false;
+    stage("create device");
     if (!createDevice()) return false;
 
-    if (!fg_.init(&dd_, &id_, physical_, device_, queueFamily_, queue_)) {
-        LOGE("FrameGen init failed");
-        return false;
+    if (frameGen_) {
+        stage("framegen init");
+        if (!fg_.init(&dd_, &id_, physical_, device_, queueFamily_, queue_)) {
+            LOGE("FrameGen init failed");
+            return false;
+        }
+        fgReady_ = true;
+        fg_.configure(cfg_);
     }
-    fgReady_ = true;
-    fg_.configure(cfg_);
+    stage("create swapchain");
     if (!createSwapchain()) return false;
-    if (!fg_.onResize(extent_, VK_FORMAT_R8G8B8A8_UNORM)) return false;
+    if (frameGen_) {
+        stage("framegen resize");
+        if (!fg_.onResize(extent_, VK_FORMAT_R8G8B8A8_UNORM)) return false;
+    }
+    stage("create offscreen");
     if (!createOffscreen()) return false;
+    stage("create sync");
 
     VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -605,7 +660,9 @@ bool Renderer::init(ANativeWindow* window, int width, int height, float refreshH
     for (VkSemaphore* s : {&acquireReal_, &acquireSpare_, &renderReal_, &renderSpare_}) {
         if (vkCreateSemaphore(device_, &si, nullptr, s) != VK_SUCCESS) return false;
     }
-    LOGI("overlay renderer ready (%dx%d, 2x insertion)", width, height);
+    stage("idle");
+    LOGI("overlay renderer ready (%dx%d, %s)", width, height,
+         frameGen_ ? "2x insertion" : "mirror only");
     return true;
 }
 
@@ -749,8 +806,10 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
         }
     }
 
+    stage("frame import");
     AhbImage ahb{};
     if (!importAhb(buffer, w, h, ahb)) return false;
+    stage("frame acquire");
 
     waitFence();
     vkResetFences(device_, 1, &fence_);
@@ -800,7 +859,7 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
             ? timestampNs - lastCaptureNs_ : 0;
     lastCaptureNs_ = timestampNs;
     const uint64_t vsyncNs = static_cast<uint64_t>(1e9 / refreshHz_);
-    const bool canInsert = prevValid_ && swapImages_.size() >= 3 &&
+    const bool canInsert = fgReady_ && prevValid_ && swapImages_.size() >= 3 &&
             deltaNs >= (vsyncNs * 18) / 10;
 
     uint32_t spareIndex = 0;
@@ -855,7 +914,8 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     const VkImage realImage = swapImages_[realIndex];
     const VkImage spareImage = haveSpare ? swapImages_[spareIndex] : VK_NULL_HANDLE;
 
-    if (prevValid_ && haveSpare) {
+    if (fgReady_ && prevValid_ && haveSpare) {
+        stage("frame record");
         barrier(cmd_, generated_.image, VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
@@ -926,6 +986,7 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
                 VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     }
+    stage("frame submit");
     vkEndCommandBuffer(cmd_);
 
     VkSemaphore waits[2] = {acquireReal_, acquireSpare_};
@@ -963,6 +1024,7 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     pri.swapchainCount = 1;
     pri.pSwapchains = &swapchain_;
     pri.pImageIndices = &realIndex;
+    stage("frame present");
     VkResult pr = vkQueuePresentKHR(queue_, &pri);
     if (pr == VK_ERROR_SURFACE_LOST_KHR || pr == VK_ERROR_DEVICE_LOST) {
         dead_ = true;
@@ -974,6 +1036,7 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     waitFence();
     destroyAhb(ahb);
     prevValid_ = true;
+    stage("idle");
     ++presented_;
     if ((presented_ & 0x3f) == 0) {
         LOGI("frame %llu %dx%d%s", (unsigned long long)timestampNs, w, h,
@@ -983,6 +1046,7 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
 }
 
 void Renderer::destroy() {
+    stage("renderer destroy");
     if (device_) vkDeviceWaitIdle(device_);
     if (fgReady_) {
         fg_.destroy();
@@ -1028,7 +1092,7 @@ void Renderer::destroy() {
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_winfg_launcher_OverlayRenderer_nativeCreate(
         JNIEnv* env, jclass, jobject surface, jint width, jint height,
-        jfloat refreshHz, jstring crashDir,
+        jfloat refreshHz, jboolean frameGen, jstring crashDir,
         jint model, jint multiplier, jint perfPreset, jfloat flowScale,
         jint gmMode, jint frMode, jint frIters, jfloat frLambda, jfloat frDt,
         jfloat frEdge, jfloat frEps, jint extraImages, jboolean pacing) {
@@ -1065,7 +1129,7 @@ Java_com_winfg_launcher_OverlayRenderer_nativeCreate(
     cfg.sanitize();
 
     Renderer* renderer = new Renderer();
-    if (!renderer->init(window, width, height, refreshHz, cfg)) {
+    if (!renderer->init(window, width, height, refreshHz, frameGen == JNI_TRUE, cfg)) {
         renderer->destroy();  // owns and releases window_
         delete renderer;
         return 0;

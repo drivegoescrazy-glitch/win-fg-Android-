@@ -28,11 +28,11 @@ public final class OverlayRenderer {
     private long handle;
 
     public boolean start(Surface surface, int width, int height, float refreshHz,
-                         String crashDir, AppSettings s) {
+                         boolean frameGen, String crashDir, AppSettings s) {
         stop();
         if (!LOADED) return false;
         try {
-            handle = nativeCreate(surface, width, height, refreshHz, crashDir,
+            handle = nativeCreate(surface, width, height, refreshHz, frameGen, crashDir,
                     s.model, s.multiplier, s.perfPreset, s.flowScale, s.gmMode, s.frMode,
                     s.frIters, s.frLambda, s.frDt, s.frEdge, s.frEps, s.extraImages, s.pacing);
         } catch (Throwable t) {
@@ -66,7 +66,7 @@ public final class OverlayRenderer {
     }
 
     private static native long nativeCreate(Surface surface, int width, int height,
-                                            float refreshHz, String crashDir,
+                                            float refreshHz, boolean frameGen, String crashDir,
                                             int model, int multiplier, int perfPreset,
                                             float flowScale, int gmMode, int frMode,
                                             int frIters, float frLambda, float frDt,

@@ -121,10 +121,21 @@ public final class MainActivity extends Activity {
     private void showNativeCrashIfAny() {
         String report = CrashLog.takeNativeReport(this);
         if (report == null) return;
+        // The renderer died inside the GPU driver or the native pipeline. Run the next
+        // session as a capture-only mirror so the overlay still works, and let the user
+        // opt back into frame generation once the cause is understood.
+        settings.mirrorOnly = true;
+        settings.save(this);
         new AlertDialog.Builder(this)
-                .setTitle("Win-FG overlay crashed")
-                .setMessage(report)
-                .setPositiveButton("Close", null)
+                .setTitle("Win-FG renderer crashed")
+                .setMessage(report + "\n\nThe overlay will start in mirror-only mode (capture,"
+                        + " no generated frames). Choose Retry to try frame generation again.")
+                .setPositiveButton("Retry frame generation", (d, w) -> {
+                    settings.mirrorOnly = false;
+                    settings.save(this);
+                    updateOverlayUi();
+                })
+                .setNegativeButton("Mirror only", null)
                 .show();
     }
 
