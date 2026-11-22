@@ -59,6 +59,7 @@ public final class OverlayService extends Service {
     public static final String ACTION_STOP = "com.winfg.launcher.OVERLAY_STOP";
     public static final String EXTRA_RESULT_CODE = "result_code";
     public static final String EXTRA_RESULT_DATA = "result_data";
+    public static final String EXTRA_APP_ONLY = "app_only";
 
     private static final String CHANNEL = "winfg_overlay";
     private static final int NOTIFICATION_ID = 73;
@@ -90,6 +91,8 @@ public final class OverlayService extends Service {
     private int captureWidth;
     private int captureHeight;
     private volatile boolean captureExclusionReady;
+    private boolean appOnlyCapture;
+    private long capturedFrames;
     private boolean frameLoopRunning;
     private Choreographer.FrameCallback frameCallback;
 
@@ -98,10 +101,15 @@ public final class OverlayService extends Service {
     }
 
     public static void start(Context context, int resultCode, Intent data) {
+        start(context, resultCode, data, false);
+    }
+
+    public static void start(Context context, int resultCode, Intent data, boolean appOnly) {
         Intent i = new Intent(context, OverlayService.class)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
-                .putExtra(EXTRA_RESULT_DATA, data);
+                .putExtra(EXTRA_RESULT_DATA, data)
+                .putExtra(EXTRA_APP_ONLY, appOnly);
         if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i);
         else context.startService(i);
     }
@@ -131,8 +139,8 @@ public final class OverlayService extends Service {
             return START_NOT_STICKY;
         }
 
-        if (Build.VERSION.SDK_INT < 29) {
-            toast("Overlay mode requires Android 10 or newer");
+        if (Build.VERSION.SDK_INT < 31) {
+            toast("Overlay mode requires Android 12 or newer");
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -145,6 +153,7 @@ public final class OverlayService extends Service {
         if (intent != null && intent.hasExtra(EXTRA_RESULT_DATA)) {
             resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0);
             resultData = intent.getParcelableExtra(EXTRA_RESULT_DATA);
+            appOnlyCapture = intent.getBooleanExtra(EXTRA_APP_ONLY, false);
         }
         if (resultData == null) {
             toast("No screen-capture permission");
@@ -270,8 +279,6 @@ public final class OverlayService extends Service {
                 | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                 | View.SYSTEM_UI_FLAG_FULLSCREEN
                 | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
-        applyExcludeFromCaptureFlag(overlayParams);
-
         try {
             windowManager.addView(overlayView, overlayParams);
         } catch (Throwable t) {
@@ -342,11 +349,14 @@ public final class OverlayService extends Service {
         synchronized (rendererLock) {
             if (renderer == null) return;
         }
-        if (!captureExclusionReady) {
+        if (!captureExclusionReady && !appOnlyCapture) {
             Log.e(TAG, "capture exclusion unavailable; refusing to mirror own overlay");
-            toast("This device blocks overlay capture exclusion; use root layer mode instead");
+            toast("This device blocks overlay capture exclusion; overlay cannot start");
             stopSelf();
             return;
+        }
+        if (!captureExclusionReady) {
+            Log.w(TAG, "skipScreenshot unavailable; relying on app-only MediaProjection capture");
         }
         try {
             MediaProjectionManager mpm =
@@ -379,6 +389,9 @@ public final class OverlayService extends Service {
             if (virtualDisplay == null) {
                 toast("Could not create capture display");
                 stopSelf();
+            } else {
+                Log.i(TAG, "projection started " + surfaceWidth + "x" + surfaceHeight
+                        + " appOnly=" + appOnlyCapture);
             }
         } catch (Throwable t) {
             Log.e(TAG, "projection start failed", t);
@@ -413,6 +426,10 @@ public final class OverlayService extends Service {
             if (buffer == null) return;
             synchronized (rendererLock) {
                 if (renderer != null) renderer.submit(buffer, image.getTimestamp());
+            }
+            if ((++capturedFrames % 30) == 0) {
+                Log.i(TAG, "captured " + capturedFrames + " frames ("
+                        + captureWidth + "x" + captureHeight + ")");
             }
         } catch (Throwable t) {
             Log.w(TAG, "capture frame dropped", t);
@@ -489,7 +506,7 @@ public final class OverlayService extends Service {
                 }
             }
         } catch (Throwable t) {
-            Log.w(TAG, "root SurfaceControl touchable region failed", t);
+            Log.w(TAG, "window SurfaceControl touchable region failed", t);
         }
         try {
             // Legacy path used by many OEMs: internal-insets touchable region.
@@ -577,20 +594,6 @@ public final class OverlayService extends Service {
             @Override public void onViewAttachedToWindow(View v) { apply.run(); }
             @Override public void onViewDetachedFromWindow(View v) {}
         });
-    }
-
-    private void applyExcludeFromCaptureFlag(WindowManager.LayoutParams params) {
-        if (Build.VERSION.SDK_INT < 31) return;
-        try {
-            Field f = WindowManager.LayoutParams.class.getDeclaredField("privateFlags");
-            f.setAccessible(true);
-            int value = f.getInt(params);
-            f.setInt(params, value | 0x00080000); // PRIVATE_FLAG_EXCLUDE_FROM_SCREEN_CAPTURE
-            captureExclusionReady = true;
-            Log.i(TAG, "privateFlags EXCLUDE_FROM_SCREEN_CAPTURE applied");
-        } catch (Throwable t) {
-            Log.d(TAG, "privateFlags EXCLUDE_FROM_SCREEN_CAPTURE unavailable: " + t.getMessage());
-        }
     }
 
     private static Method findMethod(Class<?> type, String name, Class<?>... params) {

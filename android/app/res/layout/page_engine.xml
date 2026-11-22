@@ -17,7 +17,7 @@
             android:layout_height="wrap_content"
             android:background="@drawable/bg_notice"
             android:padding="12dp"
-            android:text="The engine is bundled inside this APK. Root installs it as a system Vulkan layer so launched games use it automatically; without root you can still launch games and export the layer + profile to a host."
+            android:text="The frame-generation engine is bundled inside this APK. No-root mode captures the screen and composites generated frames in an overlay; you can also export the layer + profile for a Winlator/Bannerlator host."
             android:textColor="@color/muted"
             android:textSize="11sp" />
 
@@ -40,15 +40,6 @@
                 android:textColor="@color/muted"
                 android:textSize="11sp" />
 
-            <Switch
-                android:id="@+id/sw_overlay"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:text="Start overlay when launching a game"
-                android:textColor="@color/text"
-                android:textSize="13sp" />
-
             <Button
                 android:id="@+id/btn_overlay_now"
                 style="@style/SecondaryButton"
@@ -61,7 +52,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="10dp"
-                android:text="Captures the screen with MediaProjection and composites generated frames in a full-screen overlay. No root required. The overlay is excluded from capture through SurfaceFlinger's skip-screenshot flag (Android 10+); if the OEM blocks that flag, the overlay refuses to start instead of recording itself. Overlay mode currently inserts one generated frame (2×); the system-layer path honors 3×/4×. Adds roughly 50–80 ms of latency; secure/DRM apps show black; a display with refresh headroom is required to see extra frames. Stop it from the notification."
+                android:text="Captures the screen with MediaProjection and composites generated frames in a full-screen overlay. No root required. The overlay is excluded from capture through SurfaceFlinger's skip-screenshot flag (Android 12+; Android 10–11 have no such API); if the OEM blocks that flag, the overlay refuses to start instead of recording itself. Overlay mode inserts one generated frame (2×). Adds roughly 50–80 ms of latency; secure/DRM apps show black; a display with refresh headroom is required to see extra frames. Stop it from the notification."
                 android:textColor="@color/muted"
                 android:textSize="10sp" />
         </LinearLayout>
@@ -83,11 +74,11 @@
 
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingBottom="8dp">
                 <TextView android:layout_width="110dp" android:layout_height="wrap_content" android:text="Version" android:textColor="@color/muted" android:textSize="12sp" />
-                <TextView android:id="@+id/engine_version" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Win-FG v1.1" android:textColor="@color/text" android:textSize="12sp" />
+                <TextView android:id="@+id/engine_version" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="Win-FG v1.2" android:textColor="@color/text" android:textSize="12sp" />
             </LinearLayout>
 
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingBottom="8dp">
-                <TextView android:layout_width="110dp" android:layout_height="wrap_content" android:text="Layer" android:textColor="@color/muted" android:textSize="12sp" />
+                <TextView android:layout_width="110dp" android:layout_height="wrap_content" android:text="Host layer" android:textColor="@color/muted" android:textSize="12sp" />
                 <TextView android:id="@+id/engine_layer" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="assets/win-fg/libwin_fg.so" android:textColor="@color/text" android:textSize="11sp" android:fontFamily="monospace" />
             </LinearLayout>
 
@@ -96,28 +87,6 @@
                 <TextView android:id="@+id/engine_profile" android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:text="files/win-fg/conf.toml" android:textColor="@color/text" android:textSize="10sp" android:fontFamily="monospace" />
             </LinearLayout>
 
-            <Button
-                android:id="@+id/btn_install"
-                style="@style/PrimaryButton"
-                android:layout_width="match_parent"
-                android:layout_height="46dp"
-                android:text="INSTALL SYSTEM LAYER (ROOT)" />
-
-            <Button
-                android:id="@+id/btn_remove"
-                style="@style/SecondaryButton"
-                android:layout_width="match_parent"
-                android:layout_height="46dp"
-                android:layout_marginTop="8dp"
-                android:text="REMOVE SYSTEM LAYER" />
-
-            <Button
-                android:id="@+id/btn_check"
-                style="@style/SecondaryButton"
-                android:layout_width="match_parent"
-                android:layout_height="46dp"
-                android:layout_marginTop="8dp"
-                android:text="CHECK ROOT / LAYER STATUS" />
         </LinearLayout>
 
         <LinearLayout
@@ -207,7 +176,7 @@
                 android:id="@+id/update_version"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="You are on v1.1. Release builds keep the same update key, so newer APKs install straight over this one."
+                android:text="You are on v1.2. Release builds keep the same update key, so newer APKs install straight over this one."
                 android:textColor="@color/muted"
                 android:textSize="11sp" />
 
@@ -224,7 +193,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingBottom="18dp"
-            android:text="Win-FG Native · clean-room frame generation for Vulkan. Layer mode reads the launcher profile from /data/local/tmp/win-fg/conf.toml once the system layer is installed."
+            android:text="Win-FG Native · clean-room frame generation. The no-root overlay captures the display and runs the bundled engine in the overlay; the host export is for Winlator/Bannerlator containers."
             android:textColor="@color/muted"
             android:textSize="10sp" />
     </LinearLayout>

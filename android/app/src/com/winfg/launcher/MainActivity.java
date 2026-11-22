@@ -3,6 +3,10 @@ package com.winfg.launcher;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
 import android.content.Intent;
@@ -47,6 +51,8 @@ public final class MainActivity extends Activity {
     private static final int REQ_OVERLAY_PERMISSION = 102;
     private static final int REQ_CAPTURE = 103;
     private static final int REQ_NOTIFICATIONS = 104;
+    private static final int CAPTURE_NOTIFICATION_ID = 74;
+    private static final String CAPTURE_CHANNEL = "winfg_capture";
 
     private AppSettings settings;
     private final List<GameEntry> allGames = new ArrayList<>();
@@ -61,7 +67,7 @@ public final class MainActivity extends Activity {
 
     private boolean binding;
     private GameEntry pendingGame;
-    private Switch overlaySwitch;
+    private boolean notificationAsked;
     private TextView overlayStatus;
     private Button overlayNow;
     private final Handler ui = new Handler(Looper.getMainLooper());
@@ -73,10 +79,6 @@ public final class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         settings = AppSettings.load(this);
-        if (EngineManager.layerInstalled(this)) {
-            // Properties do not survive a reboot; re-publish the saved profile.
-            EngineManager.pushProps(this, settings);
-        }
         setContentView(R.layout.activity_main);
 
         tabGames = f(R.id.tab_games);
@@ -196,11 +198,49 @@ public final class MainActivity extends Activity {
     }
 
     private void launchGame(GameEntry g) {
-        if (settings.overlay && settings.enabled && !OverlayService.isRunning()) {
-            beginOverlay(g);
+        // The overlay is the only frame-generation path in this build, so it
+        // starts automatically whenever frame generation is enabled.
+        if (!settings.enabled || OverlayService.isRunning()) {
+            launchGameDirect(g);
             return;
         }
-        launchGameDirect(g);
+        if (Build.VERSION.SDK_INT >= 34) {
+            // Android 14+ can capture one app without hidden SurfaceFlinger
+            // APIs. Launch the game first so it appears in the system app
+            // selector, then ask for single-app capture; the overlay is then
+            // outside the captured surface by construction.
+            if (!Settings.canDrawOverlays(this)) {
+                pendingGame = g;
+                toast("Grant display-over-other-apps for the overlay");
+                try {
+                    startActivityForResult(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:" + getPackageName())), REQ_OVERLAY_PERMISSION);
+                } catch (Exception e) {
+                    toast("Overlay permission screen unavailable");
+                    launchGameDirect(g);
+                }
+                return;
+            }
+            if (!notificationAsked && Build.VERSION.SDK_INT >= 33
+                    && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                notificationAsked = true;
+                pendingGame = g;
+                requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                        REQ_NOTIFICATIONS);
+                return;
+            }
+            pendingGame = null;
+            settings.save(this);
+            EngineManager.writeProfile(this, settings);
+            launchGameDirect(g);
+            ui.postDelayed(() -> {
+                CaptureActivity.start(this, g);
+                postCaptureNotification(g);
+            }, 1200);
+            return;
+        }
+        beginOverlay(g);
     }
 
     private void launchGameDirect(GameEntry g) {
@@ -231,8 +271,8 @@ public final class MainActivity extends Activity {
             pendingGame = null;
             return;
         }
-        if (Build.VERSION.SDK_INT < 29) {
-            toast("No-root overlay requires Android 10 or newer");
+        if (Build.VERSION.SDK_INT < 31) {
+            toast("No-root overlay requires Android 12 or newer");
             pendingGame = null;
             return;
         }
@@ -261,12 +301,11 @@ public final class MainActivity extends Activity {
             MediaProjectionManager mpm =
                     (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
             if (mpm == null) throw new IllegalStateException("no MediaProjectionManager");
-            // The overlay must capture the whole display: the game is a different
-            // app, and Android 14's single-app sharing would capture this launcher
-            // instead. createConfigForDefaultDisplay() explicitly opts out of
-            // app-only sharing while still requiring user consent.
+            // On Android 14+ let the user pick single-app capture. That keeps
+            // this overlay out of the captured surface without relying on the
+            // hidden SurfaceFlinger skip-screenshot API.
             Intent intent = Build.VERSION.SDK_INT >= 34
-                    ? Api34.captureDefaultDisplay(mpm)
+                    ? Api34.captureUserChoice(mpm)
                     : mpm.createScreenCaptureIntent();
             startActivityForResult(intent, REQ_CAPTURE);
         } catch (Exception e) {
@@ -456,7 +495,6 @@ public final class MainActivity extends Activity {
         ((Switch) f(R.id.sw_enabled)).setChecked(settings.enabled);
         ((Switch) f(R.id.sw_pacing)).setChecked(settings.pacing);
         ((Switch) f(R.id.sw_debug)).setChecked(settings.debug);
-        if (overlaySwitch != null) overlaySwitch.setChecked(settings.overlay);
 
         ((Spinner) f(R.id.spinner_preset)).setSelection(settings.perfPreset, false);
         ((Spinner) f(R.id.spinner_gm)).setSelection(settings.gmMode, false);
@@ -506,16 +544,16 @@ public final class MainActivity extends Activity {
         if (running) {
             overlayStatus.setText("ACTIVE · screen capture + overlay · stop from the notification");
             overlayStatus.setTextColor(getColor(R.color.accent));
-        } else if (Build.VERSION.SDK_INT < 29) {
-            overlayStatus.setText("Unavailable · requires Android 10 or newer");
+        } else if (Build.VERSION.SDK_INT < 31) {
+            overlayStatus.setText("Unavailable · requires Android 12 or newer");
             overlayStatus.setTextColor(getColor(R.color.muted));
         } else if (!Settings.canDrawOverlays(this)) {
             overlayStatus.setText("Overlay permission not granted · you will be prompted on first launch");
             overlayStatus.setTextColor(getColor(R.color.muted));
         } else {
-            overlayStatus.setText(settings.overlay
-                    ? "Ready · starts when you launch a game"
-                    : "Disabled · turn on the switch or use START OVERLAY NOW");
+            overlayStatus.setText(settings.enabled
+                    ? "Ready · starts automatically when you launch a game"
+                    : "Frame generation is off · enable it in SETTINGS");
             overlayStatus.setTextColor(getColor(R.color.muted));
         }
         if (overlayNow != null) {
@@ -543,14 +581,7 @@ public final class MainActivity extends Activity {
         engineVersion.setText("Win-FG " + AppInfo.VERSION_NAME);
 
         overlayStatus = f(R.id.overlay_status);
-        overlaySwitch = f(R.id.sw_overlay);
         overlayNow = f(R.id.btn_overlay_now);
-        overlaySwitch.setOnCheckedChangeListener((b, v) -> {
-            if (binding) return;
-            settings.overlay = v;
-            settings.save(this);
-            updateOverlayUi();
-        });
         overlayNow.setOnClickListener(v -> {
             if (OverlayService.isRunning()) {
                 OverlayService.stop(this);
@@ -560,9 +591,6 @@ public final class MainActivity extends Activity {
             }
         });
 
-        f(R.id.btn_install).setOnClickListener(v -> confirmInstall());
-        f(R.id.btn_remove).setOnClickListener(v -> confirmRemove());
-        f(R.id.btn_check).setOnClickListener(v -> checkStatus());
         f(R.id.btn_hostfolder).setOnClickListener(v -> pickHostFolder());
         f(R.id.btn_export_conf).setOnClickListener(v -> exportConf());
         f(R.id.btn_updates).setOnClickListener(v -> openUrl(AppInfo.RELEASES_URL));
@@ -577,9 +605,7 @@ public final class MainActivity extends Activity {
         if (engineVersion == null) return;
         String version = EngineManager.engineVersion(this).replace('\n', ' ').trim();
         if (!version.isEmpty()) engineVersion.setText(version);
-        engineStatus.setText(EngineManager.layerInstalled(this)
-                ? "Installed (Magisk module) — reboot after install/remove"
-                : "Not installed — profile + export mode");
+        engineStatus.setText("Bundled engine ready · no-root overlay");
         engineProfile.setText(EngineManager.confFile(this).getAbsolutePath());
     }
 
@@ -592,89 +618,6 @@ public final class MainActivity extends Activity {
             String label = Uri.parse(tree).getLastPathSegment();
             engineHostPath.setText("Host folder: " + (label == null ? tree : label));
         }
-    }
-
-    private void confirmInstall() {
-        new AlertDialog.Builder(this)
-                .setTitle("Install system layer?")
-                .setMessage("Creates a Magisk module that loads win-fg as a Vulkan implicit layer. "
-                        + "A reboot is required. Once active, launched games read your profile "
-                        + "from winfg.* system properties.\n\n"
-                        + "This loads the layer into every Vulkan app while frame generation is enabled.")
-                .setPositiveButton("INSTALL", (d, w) -> doInstall())
-                .setNegativeButton("CANCEL", null)
-                .show();
-    }
-
-    private void doInstall() {
-        Button install = f(R.id.btn_install);
-        install.setEnabled(false);
-        engineStatus.setText("Installing system layer…");
-        io.execute(() -> {
-            try {
-                String msg = EngineManager.installSystemLayer(this, settings);
-                ui.post(() -> {
-                    install.setEnabled(true);
-                    engineStatus.setText("Installed — reboot to activate");
-                    toast(msg);
-                    refreshNotice();
-                });
-            } catch (Exception e) {
-                ui.post(() -> {
-                    install.setEnabled(true);
-                    engineStatus.setText("Install failed");
-                    toast(e.getMessage() == null ? "Install failed" : e.getMessage());
-                });
-            }
-        });
-    }
-
-    private void confirmRemove() {
-        new AlertDialog.Builder(this)
-                .setTitle("Remove system layer?")
-                .setMessage("Removes the Magisk module and clears the winfg.* profile properties. "
-                        + "A reboot is required to unload the layer.")
-                .setPositiveButton("REMOVE", (d, w) -> doRemove())
-                .setNegativeButton("CANCEL", null)
-                .show();
-    }
-
-    private void doRemove() {
-        Button remove = f(R.id.btn_remove);
-        remove.setEnabled(false);
-        engineStatus.setText("Removing system layer…");
-        io.execute(() -> {
-            try {
-                String msg = EngineManager.removeSystemLayer(this);
-                ui.post(() -> {
-                    remove.setEnabled(true);
-                    engineStatus.setText("Removed — reboot to unload");
-                    toast(msg);
-                    refreshNotice();
-                });
-            } catch (Exception e) {
-                ui.post(() -> {
-                    remove.setEnabled(true);
-                    engineStatus.setText("Remove failed");
-                    toast(e.getMessage() == null ? "Remove failed" : e.getMessage());
-                });
-            }
-        });
-    }
-
-    private void checkStatus() {
-        engineStatus.setText("Checking root…");
-        io.execute(() -> {
-            boolean root = EngineManager.hasRoot();
-            boolean installed = root && EngineManager.systemLayerInstalled();
-            if (root) EngineManager.setLayerInstalled(this, installed);
-            ui.post(() -> {
-                engineStatus.setText(!root
-                        ? "Root unavailable — profile/export mode only"
-                        : installed ? "Installed — module present" : "Not installed");
-                refreshNotice();
-            });
-        });
     }
 
     private void pickHostFolder() {
@@ -707,7 +650,8 @@ public final class MainActivity extends Activity {
 
         if (requestCode == REQ_OVERLAY_PERMISSION) {
             if (Settings.canDrawOverlays(this)) {
-                beginOverlay(pendingGame);
+                if (pendingGame != null) launchGame(pendingGame);
+                else beginOverlay(null);
             } else {
                 toast("Overlay permission is required for no-root mode");
                 finishPendingLaunch();
@@ -716,7 +660,7 @@ public final class MainActivity extends Activity {
         }
         if (requestCode == REQ_CAPTURE) {
             if (resultCode == RESULT_OK && data != null) {
-                OverlayService.start(this, resultCode, data);
+                OverlayService.start(this, resultCode, data, Build.VERSION.SDK_INT >= 34);
                 if (pendingGame != null) {
                     GameEntry g = pendingGame;
                     pendingGame = null;
@@ -767,9 +711,14 @@ public final class MainActivity extends Activity {
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == REQ_NOTIFICATIONS) {
-            // The foreground service still runs without a visible notification;
-            // continue to the screen-capture consent prompt either way.
-            requestCapture();
+            // The foreground service still runs without a visible notification.
+            // API 34 uses the game-first capture flow; older versions go straight
+            // to the full-display consent prompt.
+            if (Build.VERSION.SDK_INT >= 34 && pendingGame != null) {
+                launchGame(pendingGame);
+            } else {
+                requestCapture();
+            }
         }
     }
 
@@ -781,19 +730,18 @@ public final class MainActivity extends Activity {
 
     private void refreshNotice() {
         if (libraryNotice == null) return;
-        boolean installed = EngineManager.layerInstalled(this);
         String text;
         if (!settings.enabled) {
-            text = "●  FRAME GENERATION OFF  ·  the layer passes frames through untouched";
-        } else if (installed) {
-            text = "●  SYSTEM LAYER  ·  " + settings.summary() + "  ·  applied through winfg.* properties";
+            text = "●  FRAME GENERATION OFF  ·  turn it on in SETTINGS";
+        } else if (OverlayService.isRunning()) {
+            text = "●  NO-ROOT OVERLAY ACTIVE  ·  " + settings.summary();
         } else {
-            text = "●  PROFILE MODE  ·  " + settings.summary()
-                    + "  ·  install the layer in ENGINE for system-wide frame gen";
+            text = "●  NO-ROOT OVERLAY READY  ·  " + settings.summary()
+                    + "  ·  launch a game to start capture";
         }
         libraryNotice.setText(text);
         libraryNotice.setTextColor(getColor(
-                settings.enabled && installed ? R.color.accent : R.color.muted));
+                settings.enabled ? R.color.accent : R.color.muted));
     }
 
     private void openUrl(String url) {
@@ -815,11 +763,36 @@ public final class MainActivity extends Activity {
         super.onDestroy();
     }
 
+    private void postCaptureNotification(GameEntry g) {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            if (Build.VERSION.SDK_INT >= 26) {
+                NotificationChannel ch = new NotificationChannel(CAPTURE_CHANNEL,
+                        "Win-FG capture", NotificationManager.IMPORTANCE_DEFAULT);
+                ch.setDescription("Choose the single app to capture");
+                nm.createNotificationChannel(ch);
+            }
+            PendingIntent pi = PendingIntent.getActivity(this, CAPTURE_NOTIFICATION_ID,
+                    CaptureActivity.intent(this, g),
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+            Notification.Builder b = Build.VERSION.SDK_INT >= 26
+                    ? new Notification.Builder(this, CAPTURE_CHANNEL)
+                    : new Notification.Builder(this);
+            b.setSmallIcon(R.drawable.ic_foreground)
+                    .setContentTitle("Win-FG ready")
+                    .setContentText("Tap to choose single-app capture for " + g.label)
+                    .setContentIntent(pi)
+                    .setAutoCancel(true);
+            nm.notify(CAPTURE_NOTIFICATION_ID, b.build());
+        } catch (Throwable ignored) {}
+    }
+
     /** Kept in a separate class so API 34 types are never resolved on older devices. */
     private static final class Api34 {
-        static Intent captureDefaultDisplay(MediaProjectionManager mpm) {
+        static Intent captureUserChoice(MediaProjectionManager mpm) {
             return mpm.createScreenCaptureIntent(
-                    MediaProjectionConfig.createConfigForDefaultDisplay());
+                    MediaProjectionConfig.createConfigForUserChoice());
         }
     }
 

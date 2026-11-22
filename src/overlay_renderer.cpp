@@ -242,10 +242,16 @@ bool Renderer::createDevice() {
             VK_KHR_SWAPCHAIN_EXTENSION_NAME,
             "VK_ANDROID_external_memory_android_hardware_buffer",
             VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
-            VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME,
     };
+    // YCbCr conversion is optional; the RGBA capture path does not need it.
+    // Enabling an unsupported extension makes vkCreateDevice fail outright,
+    // which was a silent overlay-start failure on some Mali/Adreno drivers.
+    if (hasExtension(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME))
+        extensions.push_back(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
     foreignQueue_ = hasExtension(VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME);
     if (foreignQueue_) extensions.push_back(VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME);
+    LOGI("device extensions: %zu (ycbcr=%d foreign=%d)", extensions.size(),
+         (int)hasExtension(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME), (int)foreignQueue_);
 
     float priority = 1.0f;
     VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -529,8 +535,13 @@ bool Renderer::importAhb(AHardwareBuffer* buffer, int width, int height, AhbImag
         LOGW("AHB properties failed");
         return false;
     }
-    if (formatProps.externalFormat != 0 || formatProps.format == VK_FORMAT_UNDEFINED) {
-        LOGW("AHB external format unsupported: %llu",
+    // MediaProjection's ImageReader with PixelFormat.RGBA_8888 produces
+    // AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM. Some drivers (including the
+    // emulator's SwiftShader) report that native format as externalFormat=1
+    // while still returning a valid VkFormat. Only reject when Vulkan has no
+    // native format for the buffer.
+    if (formatProps.format == VK_FORMAT_UNDEFINED) {
+        LOGW("AHB format unsupported (external=%llu)",
              (unsigned long long)formatProps.externalFormat);
         return false;
     }

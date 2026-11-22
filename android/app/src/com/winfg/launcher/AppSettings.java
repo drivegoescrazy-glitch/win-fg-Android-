@@ -24,7 +24,7 @@ public final class AppSettings {
     public float frEdge = 8.0f;
     public float frEps = 0.05f;
     public int extraImages = 2;
-    public boolean overlay = false;   // no-root MediaProjection + system-overlay mode
+    public boolean overlay = true;    // legacy preference; overlay now starts automatically
 
     public static AppSettings load(Context c) {
         SharedPreferences p = c.getSharedPreferences(PREF, Context.MODE_PRIVATE);
@@ -93,8 +93,7 @@ public final class AppSettings {
     public String toToml() {
         StringBuilder b = new StringBuilder();
         b.append("# Win-FG profile — written by the Win-FG launcher.\n");
-        b.append("# Hot-reloaded by the layer; the launcher also mirrors these values\n");
-        b.append("# into winfg.* system properties when the system layer is installed.\n");
+        b.append("# Used by the host-exported layer and by the no-root overlay.\n");
         b.append("enabled = ").append(enabled).append('\n');
         b.append("debug = ").append(debug).append('\n');
         b.append("pacing = ").append(pacing).append('\n');
