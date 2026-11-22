@@ -171,6 +171,15 @@ void main() {
     // No usable motion at all (flat region, failed search): warp nothing.
     float mag   = max(length(F01), length(F10));
     float trust = clamp(1.0 - mag / kMaxFlow, 0.0, 1.0);
+    // ── Temporal midpoint fallback ───────────────────────────────────────────
+    // What makes 30 fps look like 30 is not blur, it is that two consecutive
+    // presented frames are IDENTICAL. Falling back to the nearer real frame when
+    // the motion field is unusable reproduces exactly that: a duplicate. The
+    // unwarped temporal midpoint always comes from *between* the two real frames,
+    // so even with no trustworthy motion the sequence advances visually and reads
+    // as 60 with some ghosting instead of reading as 30 with none.
+    vec3 midRaw = mix(samePrev, sameCurr, clamp(alpha, 0.0, 1.0));
+
     // ── Gap inpainting (FSR 3 pattern) ───────────────────────────────────────
     // FSR 3 fills low-confidence regions from a blurred mip of the frame instead
     // of leaving the nearest exact pixel there. For "no information at all" a
@@ -181,7 +190,9 @@ void main() {
                       + texture(uCurr, uv + vec2(0.0, invDim.y)).rgb
                       + texture(uCurr, uv - vec2(0.0, invDim.y)).rgb);
     float gate  = smoothstep(0.02, 0.25, conf * trust);
-    col = mix(blur, col, gate);
+    // Blend between a blurred guess (no information) and the temporal midpoint
+    // (some information, no trustworthy vector); never a duplicate of a real frame.
+    col = mix(mix(blur, midRaw, 0.85), col, gate);
 
     // ── Clarity pass ──────────────────────────────────────────────────────────
     // A motion-compensated frame is a resampled frame, so it is always a little
@@ -201,10 +212,11 @@ void main() {
     col = mix(col, sameCurr, gui);
 
     // ── Safety net ──────────────────────────────────────────────────────────
-    // If the result has drifted far from the nearer real frame, the synthesis is
-    // wrong at this pixel and the real frame is always the defensible answer.
-    float drift = abs(luma(col) - luma(stillRaw));
-    col = mix(col, stillRaw, smoothstep(0.18, 0.45, drift));
+    // If the result drifted far from both real frames the synthesis invented
+    // something; fall back to the temporal midpoint, not to a real frame — a real
+    // frame here duplicates the next present and undoes the smoothness.
+    float drift = min(abs(luma(col) - luma(stillRaw)), abs(luma(col) - luma(midRaw)));
+    col = mix(col, midRaw, smoothstep(0.30, 0.70, drift));
 
     // Dither before the 8-bit store: banding in flat gradients is otherwise
     // indistinguishable from a synthesis artefact.
