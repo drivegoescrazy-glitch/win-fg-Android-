@@ -96,6 +96,12 @@ public final class OverlayService extends Service {
     private static final long GPU_BUFFER_USAGE =
             HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE | HardwareBuffer.USAGE_GPU_COLOR_OUTPUT;
     private long skippedFrames;
+    private int reattachAttempts;
+    private int displayAttempts;
+    private static volatile String lastFailure;
+    private final Object projectionLock = new Object();
+    /** Set once we are deliberately tearing down, so onStop is not reported as a failure. */
+    private volatile boolean stopping;
     private volatile boolean captureExclusionReady;
     private static volatile boolean hiddenApiExempted;
     private int exclusionRetries;
@@ -106,6 +112,11 @@ public final class OverlayService extends Service {
 
     public static boolean isRunning() {
         return running;
+    }
+
+    /** Why the last overlay session ended, for the in-app status line. */
+    public static String lastFailure() {
+        return lastFailure;
     }
 
     public static void start(Context context, int resultCode, Intent data) {
@@ -146,7 +157,7 @@ public final class OverlayService extends Service {
         } catch (Throwable t) {
             // Nothing in the overlay pipeline may take the app down with it.
             Log.e(TAG, "overlay start failed", t);
-            toast("Overlay failed to start: " + t);
+            reportFailure("Overlay failed to start: " + t);
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -219,6 +230,10 @@ public final class OverlayService extends Service {
     }
 
     private Notification notification() {
+        return notification("Screen capture + frame generation · tap STOP to end");
+    }
+
+    private Notification notification(String text) {
         Intent stop = new Intent(this, OverlayService.class).setAction(ACTION_STOP);
         PendingIntent pi = PendingIntent.getService(this, 2, stop,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
@@ -227,7 +242,7 @@ public final class OverlayService extends Service {
                 : new Notification.Builder(this);
         return b.setSmallIcon(R.drawable.ic_foreground)
                 .setContentTitle("Win-FG overlay active")
-                .setContentText("Screen capture + frame generation · tap STOP to end")
+                .setContentText(text)
                 .setOngoing(true)
                 .addAction(android.R.drawable.ic_menu_close_clear_cancel, "STOP", pi)
                 .build();
@@ -245,10 +260,14 @@ public final class OverlayService extends Service {
         textureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override public void onSurfaceTextureAvailable(SurfaceTexture st, int width, int height) {
                 try {
+                    reattachAttempts = 0;
                     st.setDefaultBufferSize(screenWidth(), screenHeight());
                     openOutputSurface(st, width, height);
                 } catch (Throwable t) {
-                    fail("Overlay surface failed: " + t, t);
+                    // The overlay window can be re-created under us; keep the
+                    // capture alive and try to get a surface back.
+                    Log.e(TAG, "overlay surface failed", t);
+                    scheduleOverlayReattach();
                 }
             }
 
@@ -265,7 +284,7 @@ public final class OverlayService extends Service {
                     }
                     installSkipScreenshot(overlayView);
                 } catch (Throwable t) {
-                    fail("Overlay resize failed: " + t, t);
+                    Log.w(TAG, "overlay resize failed", t);
                 }
             }
 
@@ -273,10 +292,6 @@ public final class OverlayService extends Service {
                 try {
                     surfaceReady = false;
                     stopFrameLoop();
-                    // Tear down the projection before the renderer that consumes it;
-                    // otherwise SurfaceFlinger keeps a producer aimed at a released
-                    // ImageReader surface.
-                    stopCapture();
                     synchronized (rendererLock) {
                         if (renderer != null) {
                             renderer.stop();
@@ -287,6 +302,12 @@ public final class OverlayService extends Service {
                         try { outputSurface.release(); } catch (Throwable ignored) {}
                         outputSurface = null;
                     }
+                    // Do NOT tear the projection down here. The overlay window's
+                    // surface is destroyed transiently (game launch, display
+                    // reconfiguration), and stopping the projection from this
+                    // callback made the system end the cast and the service die a
+                    // moment after it started. Keep capturing and re-attach.
+                    if (projection != null) scheduleOverlayReattach();
                 } catch (Throwable t) {
                     Log.w(TAG, "overlay teardown failed", t);
                 }
@@ -397,8 +418,7 @@ public final class OverlayService extends Service {
                 started = false;
             }
             if (!started) {
-                Log.e(TAG, "renderer start failed");
-                toast("Vulkan overlay failed to start");
+                reportFailure("Vulkan overlay failed to start");
                 stopSelf();
                 return;
             }
@@ -423,6 +443,15 @@ public final class OverlayService extends Service {
     }
 
     private void startProjection() {
+        // Called from the main thread (surface callbacks) and from the capture
+        // thread (retries). Two getMediaProjection() calls with the same consent
+        // token make the system reject the second one, so serialise them.
+        synchronized (projectionLock) {
+            startProjectionLocked();
+        }
+    }
+
+    private void startProjectionLocked() {
         if (projection != null || resultData == null || !surfaceReady
                 || surfaceWidth <= 0 || surfaceHeight <= 0) {
             return;
@@ -436,13 +465,13 @@ public final class OverlayService extends Service {
                 + " appOnly=" + appOnlyCapture);
         if (!captureExclusionReady && !appOnlyCapture) {
             installSkipScreenshot(overlayView);
-            if (exclusionRetries++ < 4) {
+            if (exclusionRetries++ < 8) {
                 Log.w(TAG, "capture exclusion not ready; retry " + exclusionRetries);
                 captureHandler.postDelayed(this::startProjection, 250);
                 return;
             }
             Log.e(TAG, "capture exclusion unavailable; refusing to mirror own overlay");
-            toast("Overlay capture exclusion failed. Update Android or report this device.");
+            reportFailure("Capture exclusion failed on this device");
             stopSelf();
             return;
         }
@@ -454,23 +483,45 @@ public final class OverlayService extends Service {
             MediaProjectionManager mpm =
                     (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
             if (mpm == null) {
-                toast("MediaProjection unavailable");
+                reportFailure("MediaProjection unavailable");
                 stopSelf();
                 return;
             }
             projection = mpm.getMediaProjection(resultCode, resultData);
             if (projection == null) {
-                toast("Screen-capture permission expired");
+                reportFailure("Screen-capture permission expired — start the overlay again");
                 stopSelf();
                 return;
             }
             projection.registerCallback(new MediaProjection.Callback() {
                 @Override public void onStop() {
-                    main.post(OverlayService.this::stopSelf);
+                    if (stopping) {
+                        main.post(OverlayService.this::stopSelf);
+                        return;
+                    }
+                    // The system ended the cast (user stop, OEM policy, or the
+                    // projection losing its foreground service).
+                    Log.w(TAG, "projection stopped by the system");
+                    main.post(() -> {
+                        reportFailure("Screen capture was stopped by the system");
+                        stopSelf();
+                    });
                 }
             }, captureHandler);
 
             createReader(surfaceWidth, surfaceHeight);
+            startVirtualDisplay();
+        } catch (Throwable t) {
+            Log.e(TAG, "projection start failed", t);
+            reportFailure("Screen capture failed: " + t.getMessage());
+            stopSelf();
+        }
+    }
+
+    /** Creates the capture display, retrying while the projection settles. */
+    private void startVirtualDisplay() {
+        if (projection == null || reader == null) return;
+        try {
             int density = getResources().getDisplayMetrics().densityDpi;
             // flags=0 is the screen-capture default. AUTO_MIRROR creates a
             // secondary logical display and, on some OEM compositors, feeds the
@@ -478,18 +529,31 @@ public final class OverlayService extends Service {
             virtualDisplay = projection.createVirtualDisplay(
                     "winfg-overlay", surfaceWidth, surfaceHeight, density, 0,
                     reader.getSurface(), null, captureHandler);
-            if (virtualDisplay == null) {
-                toast("Could not create capture display");
-                stopSelf();
-            } else {
-                Log.i(TAG, "projection started " + surfaceWidth + "x" + surfaceHeight
-                        + " appOnly=" + appOnlyCapture);
-            }
         } catch (Throwable t) {
-            Log.e(TAG, "projection start failed", t);
-            toast("Screen capture failed: " + t.getMessage());
-            stopSelf();
+            Log.e(TAG, "createVirtualDisplay failed", t);
+            virtualDisplay = null;
         }
+        if (virtualDisplay != null) {
+            Log.i(TAG, "projection started " + surfaceWidth + "x" + surfaceHeight
+                    + " appOnly=" + appOnlyCapture);
+            updateNotification("Screen capture + frame generation · tap STOP to end");
+            return;
+        }
+        if (displayAttempts++ < 3) {
+            Log.w(TAG, "capture display not ready; retry " + displayAttempts);
+            captureHandler.postDelayed(this::startVirtualDisplay, 400);
+            return;
+        }
+        reportFailure("Could not create the capture display");
+        stopSelf();
+    }
+
+    private void updateNotification(String text) {
+        try {
+            NotificationManager nm =
+                    (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null) nm.notify(NOTIFICATION_ID, notification(text));
+        } catch (Throwable ignored) {}
     }
 
     private void createReader(int width, int height) {
@@ -726,14 +790,63 @@ public final class OverlayService extends Service {
     }
 
     /** Logs, tells the user, and takes only the overlay down. */
-    private void fail(String message, Throwable t) {
-        Log.e(TAG, message, t);
-        toast(message);
-        stopSelf();
+    /**
+     * Puts the overlay window back after its surface was destroyed. Capture keeps
+     * running across the gap; only the renderer and the view are rebuilt.
+     */
+    private void scheduleOverlayReattach() {
+        if (!running || reattachAttempts >= 5) {
+            if (reattachAttempts >= 5) {
+                Log.w(TAG, "overlay surface keeps disappearing; capture left running");
+            }
+            return;
+        }
+        reattachAttempts++;
+        main.postDelayed(() -> {
+            if (!running) return;
+            Log.i(TAG, "re-attaching overlay window (attempt " + reattachAttempts + ")");
+            try {
+                if (overlayView != null) windowManager.removeView(overlayView);
+            } catch (Throwable ignored) {}
+            overlayView = null;
+            textureView = null;
+            showOverlay();
+            if (projection != null && surfaceReady) installSkipScreenshot(overlayView);
+        }, 700);
+    }
+
+    /**
+     * Records why the overlay ended. The reason is logged, appended to
+     * files/win-fg/overlay.log, shown in the notification and in the app, so a
+     * device-specific failure is diagnosable without adb.
+     */
+    private void reportFailure(String reason) {
+        lastFailure = reason;
+        Log.e(TAG, reason);
+        try {
+            java.io.File dir = new java.io.File(getFilesDir(), EngineManager.DIR);
+            if (dir.exists() || dir.mkdirs()) {
+                String line = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",
+                        java.util.Locale.US).format(new java.util.Date()) + "  " + reason + "\n";
+                try (java.io.FileOutputStream out =
+                             new java.io.FileOutputStream(
+                                     new java.io.File(dir, "overlay.log"), true)) {
+                    out.write(line.getBytes("UTF-8"));
+                }
+            }
+        } catch (Throwable ignored) {}
+        try {
+            NotificationManager nm =
+                    (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null) nm.notify(NOTIFICATION_ID, notification("Stopped · " + reason));
+        } catch (Throwable ignored) {}
+        toast(reason);
     }
 
     @Override
     public void onDestroy() {
+        running = false;
+        stopping = true;
         stopFrameLoop();
         stopCapture();
         synchronized (rendererLock) {

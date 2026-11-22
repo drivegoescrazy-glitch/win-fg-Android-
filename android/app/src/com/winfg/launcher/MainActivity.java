@@ -551,6 +551,11 @@ public final class MainActivity extends Activity {
         } else if (!Settings.canDrawOverlays(this)) {
             overlayStatus.setText("Overlay permission not granted · you will be prompted on first launch");
             overlayStatus.setTextColor(getColor(R.color.muted));
+        } else if (OverlayService.lastFailure() != null) {
+            // Surface the reason the last session ended; it is also written to
+            // files/win-fg/overlay.log and shown in the notification.
+            overlayStatus.setText("Last run stopped · " + OverlayService.lastFailure());
+            overlayStatus.setTextColor(getColor(R.color.muted));
         } else {
             overlayStatus.setText(settings.enabled
                     ? "Ready · starts automatically when you launch a game"
