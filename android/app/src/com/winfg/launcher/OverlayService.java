@@ -36,6 +36,7 @@ import android.view.TextureView;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import org.lsposed.hiddenapibypass.HiddenApiBypass;
@@ -119,6 +120,15 @@ public final class OverlayService extends Service {
     private long capturedFrames;
     private boolean frameLoopRunning;
     private Choreographer.FrameCallback frameCallback;
+    /** On-overlay status badge: proves the pipeline is live and shows the failure reason. */
+    private TextView hud;
+    private long hudWindowStart;
+    private int hudFrames;
+    private boolean rendererRetried;
+    private boolean rendererLost;
+    private final Runnable hideHud = () -> {
+        if (hud != null) hud.setVisibility(View.GONE);
+    };
 
     public static boolean isRunning() {
         return running;
@@ -220,17 +230,40 @@ public final class OverlayService extends Service {
         }
 
         settings = AppSettings.load(this);
-        // Capture FIRST, overlay second. A MediaProjection token that does not create its
-        // VirtualDisplay almost immediately is revoked by the system on several OEM ROMs
-        // (confirmed behaviour on Snapdragon handhelds), which killed the whole session
-        // right after the cast indicator appeared. The window and the Vulkan renderer are
-        // set up afterwards, while frames are already arriving.
+        // Overlay first, capture second, game last — the order the working no-root
+        // frame-gen implementations use. The token is consumed immediately (Android 13
+        // checks the foreground service when getMediaProjection is called), the capture
+        // display is created from the surface callback, and the game is launched only
+        // after a frame has been presented. Starting capture before the window made the
+        // game rotate the display while the overlay surface and swapchain were still
+        // being created.
         startProjection();
         showOverlay();
-        if (targetPackage != null) {
-            main.postDelayed(this::launchTarget, 2000);
-        }
+        // Safety net: the overlay surface normally arrives first and starts capture.
+        // If it never does (the ROM blocks the window), capture and the game must
+        // still start instead of leaving the user in this app.
+        main.postDelayed(this::ensureStarted, 3000);
         return START_NOT_STICKY;
+    }
+
+    /**
+     * Starts the capture display once the overlay window exists. Capture used to start
+     * before the window, and the game was launched on the first captured frame; the
+     * game then rotated and resized the display while the overlay surface and the
+     * Vulkan swapchain were still being created, which left the overlay dead on top of
+     * a running game.
+     */
+    private void ensureStarted() {
+        if (!running || projection == null) return;
+        startCapture();
+        launchTarget();
+    }
+
+    private void startCapture() {
+        synchronized (projectionLock) {
+            if (projection == null) return;
+            startVirtualDisplay();
+        }
     }
 
     /** Launches the game once capture is live, then keeps the overlay on top of it. */
@@ -377,14 +410,13 @@ public final class OverlayService extends Service {
             @Override public void onSurfaceTextureSizeChanged(SurfaceTexture st, int width, int height) {
                 try {
                     st.setDefaultBufferSize(screenWidth(), screenHeight());
-                    if (projection == null) {
-                        surfaceWidth = width;
-                        surfaceHeight = height;
-                        ensureRenderer(width, height);
-                        // Recreating the reader after MediaProjection has started
-                        // closes the live consumer during SurfaceFlinger's dequeue.
-                        resizeCapture(width, height);
-                    }
+                    surfaceWidth = width;
+                    surfaceHeight = height;
+                    // A rotation or immersive change gives the overlay a new surface
+                    // size. The Vulkan swapchain has to follow it, or every acquire is
+                    // out of date and the overlay stops presenting.
+                    ensureRenderer(width, height);
+                    resizeCapture(width, height);
                     installSkipScreenshot(overlayView);
                 } catch (Throwable t) {
                     Log.w(TAG, "overlay resize failed", t);
@@ -421,6 +453,23 @@ public final class OverlayService extends Service {
         });
         overlayView.addView(textureView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        // Small status badge over the game. When the overlay dies there is otherwise no
+        // way to see why on the device itself: the foreground notification is removed
+        // with the service and logcat needs adb.
+        hud = new TextView(host);
+        hud.setText("Win-FG starting…");
+        hud.setTextColor(Color.WHITE);
+        hud.setTextSize(12f);
+        hud.setPadding(28, 14, 28, 14);
+        hud.setBackgroundColor(0x99000000);
+        FrameLayout.LayoutParams hudParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.START);
+        hudParams.setMargins(32, 32, 0, 0);
+        overlayView.addView(hud, hudParams);
+        main.removeCallbacks(hideHud);
+        main.postDelayed(hideHud, 7000);
 
         int type = Build.VERSION.SDK_INT >= 26
                 ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -490,7 +539,7 @@ public final class OverlayService extends Service {
         ensureRenderer(width, height);
         installSkipScreenshot(overlayView);
         startFrameLoop();
-        startProjection();
+        startCapture();
     }
 
     private DisplayMetrics realMetrics() {
@@ -542,25 +591,93 @@ public final class OverlayService extends Service {
                 // the SurfaceTexture callback and kill the process.
                 Log.e(TAG, "overlay renderer library unavailable", t);
                 reportFailure("Frame generation library could not be loaded");
-                stopSelf();
+                failSessionSoon();
                 return;
             }
             boolean started;
             try {
-                started = r.start(outputSurface, width, height, s);
+                started = r.start(outputSurface, width, height, displayRefreshRate(),
+                        crashDir(), s);
             } catch (Throwable t) {
                 Log.e(TAG, "renderer start threw", t);
                 started = false;
             }
             if (!started) {
-                reportFailure("Vulkan overlay failed to start");
-                stopSelf();
+                Log.e(TAG, "Vulkan overlay failed to start (" + width + "x" + height
+                        + " @" + displayRefreshRate() + "Hz)");
+                if (!rendererRetried) {
+                    // The first swapchain after a display mode change occasionally
+                    // fails on Adreno; one fresh attempt is cheap and fixes it.
+                    rendererRetried = true;
+                    main.postDelayed(() -> ensureRenderer(width, height), 700);
+                    return;
+                }
+                reportFailure("Frame generation could not start (Vulkan " + width + "x"
+                        + height + ")");
+                failSessionSoon();
                 return;
             }
+            rendererRetried = false;
+            rendererLost = false;
             renderer = r;
             rendererWidth = width;
             rendererHeight = height;
+            Log.i(TAG, "overlay renderer started " + width + "x" + height
+                    + " @" + displayRefreshRate() + "Hz");
         }
+    }
+
+    private float displayRefreshRate() {
+        try {
+            DisplayManager dm = (DisplayManager) getSystemService(DISPLAY_SERVICE);
+            Display display = dm == null ? null : dm.getDisplay(Display.DEFAULT_DISPLAY);
+            if (display != null) {
+                float hz = display.getRefreshRate();
+                if (hz > 1f && hz < 1000f) return hz;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "display refresh rate unavailable", t);
+        }
+        return 60f;
+    }
+
+    private String crashDir() {
+        java.io.File dir = new java.io.File(getFilesDir(), EngineManager.DIR);
+        if (!dir.exists()) dir.mkdirs();
+        return dir.getAbsolutePath();
+    }
+
+    private void countPresentedFrame() {
+        long now = android.os.SystemClock.elapsedRealtime();
+        if (hudWindowStart == 0) hudWindowStart = now;
+        hudFrames++;
+        long elapsed = now - hudWindowStart;
+        if (elapsed < 1000) return;
+        int fps = (int) (hudFrames * 1000 / Math.max(1, elapsed));
+        hudFrames = 0;
+        hudWindowStart = now;
+        main.post(() -> {
+            if (hud != null && hud.getVisibility() == View.VISIBLE) {
+                hud.setText("Win-FG 2× · " + fps + " fps");
+            }
+        });
+    }
+
+    private void showHudError(String text) {
+        main.post(() -> {
+            if (hud == null) return;
+            main.removeCallbacks(hideHud);
+            hud.setText(text);
+            hud.setVisibility(View.VISIBLE);
+        });
+    }
+
+    /** Leaves the failure on screen for a few seconds, then ends the session. */
+    private void failSessionSoon() {
+        showHudError(lastFailure);
+        main.postDelayed(() -> {
+            if (running && renderer == null) stopSelf();
+        }, 6000);
     }
 
     private static void exemptViewHiddenApis() {
@@ -616,6 +733,10 @@ public final class OverlayService extends Service {
                 return;
             }
             projection.registerCallback(new MediaProjection.Callback() {
+                // Capture is created from the overlay's surface callback, so the token
+                // is held for a few hundred ms without a VirtualDisplay. That is valid
+                // on AOSP; only reusing the consent intent is rejected.
+
                 @Override public void onStop() {
                     if (stopping) {
                         main.post(OverlayService.this::stopSelf);
@@ -631,8 +752,7 @@ public final class OverlayService extends Service {
                 }
             }, captureHandler);
 
-            createReader(width, height);
-            startVirtualDisplay();
+            Log.i(TAG, "projection token acquired; capture starts with the overlay surface");
         } catch (Throwable t) {
             Log.e(TAG, "projection start failed", t);
             reportFailure("Screen capture failed: " + t.getMessage());
@@ -642,7 +762,17 @@ public final class OverlayService extends Service {
 
     /** Creates the one capture display this token is allowed. */
     private void startVirtualDisplay() {
-        if (projection == null || reader == null) return;
+        if (projection == null || virtualDisplay != null) return;
+        if (reader == null) {
+            int w = screenWidth();
+            int h = screenHeight();
+            if (w <= 0 || h <= 0) {
+                reportFailure("Could not read the display size");
+                stopSelf();
+                return;
+            }
+            createReader(w, h);
+        }
         try {
             int density = getResources().getDisplayMetrics().densityDpi;
             // flags=0 is what scrcpy and screen-share apps use: MediaProjection already
@@ -739,12 +869,23 @@ public final class OverlayService extends Service {
             if (capturedFrames == 0) {
                 Log.i(TAG, "first capture frame " + captureWidth + "x" + captureHeight
                         + " usage=0x" + Long.toHexString(usage));
-                // Capture is live: start the game now so it paints into a working
-                // pipeline instead of racing the capture start.
-                if (targetPackage != null) main.post(this::launchTarget);
             }
+            int presented;
             synchronized (rendererLock) {
-                if (renderer != null) renderer.submit(buffer, image.getTimestamp());
+                presented = renderer == null ? 0 : renderer.submit(buffer, image.getTimestamp());
+            }
+            if (presented > 0) {
+                // The overlay is actually presenting frames. Only now is it safe to let
+                // the game take the display: launching earlier rotated and resized the
+                // overlay surface while Vulkan was still initialising.
+                if (targetPackage != null) main.post(this::launchTarget);
+                countPresentedFrame();
+            } else if (presented < 0 && !stopping && !rendererLost) {
+                // The driver reported the swapchain gone; rebuild the window and the
+                // renderer instead of silently capturing into nothing.
+                rendererLost = true;
+                Log.w(TAG, "renderer lost its swapchain");
+                main.post(this::scheduleOverlayReattach);
             }
             if ((++capturedFrames % 30) == 0) {
                 Log.i(TAG, "captured " + capturedFrames + " frames ("
@@ -997,6 +1138,7 @@ public final class OverlayService extends Service {
      */
     private void reportFailure(String reason) {
         lastFailure = reason;
+        showHudError(reason);
         // A notification owned by the NotificationManager, not the service: this one survives
         // stopSelf(), so the reason is still readable in the shade after the overlay closes.
         postFailureNotification(reason);
@@ -1048,6 +1190,7 @@ public final class OverlayService extends Service {
     public void onDestroy() {
         running = false;
         stopping = true;
+        main.removeCallbacks(hideHud);
         stopFrameLoop();
         stopCapture();
         synchronized (rendererLock) {

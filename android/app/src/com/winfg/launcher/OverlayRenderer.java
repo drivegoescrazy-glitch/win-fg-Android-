@@ -27,11 +27,12 @@ public final class OverlayRenderer {
 
     private long handle;
 
-    public boolean start(Surface surface, int width, int height, AppSettings s) {
+    public boolean start(Surface surface, int width, int height, float refreshHz,
+                         String crashDir, AppSettings s) {
         stop();
         if (!LOADED) return false;
         try {
-            handle = nativeCreate(surface, width, height,
+            handle = nativeCreate(surface, width, height, refreshHz, crashDir,
                     s.model, s.multiplier, s.perfPreset, s.flowScale, s.gmMode, s.frMode,
                     s.frIters, s.frLambda, s.frDt, s.frEdge, s.frEps, s.extraImages, s.pacing);
         } catch (Throwable t) {
@@ -41,13 +42,15 @@ public final class OverlayRenderer {
         return handle != 0;
     }
 
-    public void submit(HardwareBuffer buffer, long timestampNs) {
+    /** @return 1 when the frame was presented, 0 when skipped, -1 when the swapchain died. */
+    public int submit(HardwareBuffer buffer, long timestampNs) {
         long h = handle;
-        if (!LOADED || h == 0 || buffer == null) return;
+        if (!LOADED || h == 0 || buffer == null) return 0;
         try {
-            nativeSubmit(h, buffer, timestampNs);
+            return nativeSubmit(h, buffer, timestampNs);
         } catch (Throwable t) {
             Log.w(TAG, "nativeSubmit failed", t);
+            return 0;
         }
     }
 
@@ -63,13 +66,14 @@ public final class OverlayRenderer {
     }
 
     private static native long nativeCreate(Surface surface, int width, int height,
+                                            float refreshHz, String crashDir,
                                             int model, int multiplier, int perfPreset,
                                             float flowScale, int gmMode, int frMode,
                                             int frIters, float frLambda, float frDt,
                                             float frEdge, float frEps, int extraImages,
                                             boolean pacing);
 
-    private static native void nativeSubmit(long handle, HardwareBuffer buffer, long timestampNs);
+    private static native int nativeSubmit(long handle, HardwareBuffer buffer, long timestampNs);
 
     private static native void nativeDestroy(long handle);
 }

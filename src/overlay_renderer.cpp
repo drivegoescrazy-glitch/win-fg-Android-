@@ -29,8 +29,15 @@
 #include "vk_dispatch.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <csignal>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <fcntl.h>
 #include <mutex>
+#include <unwind.h>
+#include <unistd.h>
 #include <vector>
 
 #define LOG_TAG "win-fg-overlay"
@@ -39,6 +46,64 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace {
+
+// A Vulkan fault inside the Adreno driver cannot be caught, but the signal and the
+// stack can be written to files/win-fg/native_crash.log, which the launcher shows on
+// the next start. Without this the only evidence of a renderer crash is a vanished
+// notification, because the process (and the foreground service) dies with it.
+char g_crashPath[256];
+std::atomic<bool> g_crashHandlerInstalled{false};
+
+struct BacktraceState {
+    uintptr_t* frames;
+    int count;
+    int max;
+};
+
+_Unwind_Reason_Code unwindCallback(_Unwind_Context* ctx, void* arg) {
+    BacktraceState* state = static_cast<BacktraceState*>(arg);
+    uintptr_t pc = static_cast<uintptr_t>(_Unwind_GetIP(ctx));
+    if (pc != 0 && state->count < state->max) state->frames[state->count++] = pc;
+    return state->count >= state->max ? _URC_END_OF_STACK : _URC_NO_REASON;
+}
+
+void nativeCrashHandler(int sig) {
+    int fd = g_crashPath[0] ? open(g_crashPath, O_WRONLY | O_CREAT | O_APPEND, 0600) : -1;
+    if (fd >= 0) {
+        char head[64];
+        int n = snprintf(head, sizeof head, "native signal %d\n", sig);
+        if (n > 0) {
+            ssize_t ignored = write(fd, head, (size_t) n);
+            (void) ignored;
+        }
+        uintptr_t frames[48];
+        BacktraceState state{frames, 0, 48};
+        // bionic's <execinfo.h> backtrace() is API 33+; the unwinder is always there.
+        _Unwind_Backtrace(unwindCallback, &state);
+        for (int i = 0; i < state.count; ++i) {
+            char line[64];
+            int len = snprintf(line, sizeof line, "  #%02d %p\n", i, (void*) frames[i]);
+            if (len > 0) {
+                ssize_t ignored = write(fd, line, (size_t) len);
+                (void) ignored;
+            }
+        }
+        close(fd);
+    }
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+void installSignalHandlers(const char* dir) {
+    if (g_crashHandlerInstalled.exchange(true)) return;
+    snprintf(g_crashPath, sizeof g_crashPath, "%s/native_crash.log", dir);
+    struct sigaction sa {};
+    sa.sa_handler = nativeCrashHandler;
+    sa.sa_flags = SA_RESETHAND | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    for (int sig : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT}) sigaction(sig, &sa, nullptr);
+    LOGI("native crash handler armed at %s", g_crashPath);
+}
 
 struct Image {
     VkImage image = VK_NULL_HANDLE;
@@ -53,8 +118,10 @@ struct AhbImage {
 
 class Renderer {
 public:
-    bool init(ANativeWindow* window, int width, int height, const winfg::Config& cfg);
-    void submit(AHardwareBuffer* buffer, uint64_t timestampNs);
+    bool init(ANativeWindow* window, int width, int height, float refreshHz,
+              const winfg::Config& cfg);
+    bool submit(AHardwareBuffer* buffer, uint64_t timestampNs);
+    bool dead() const { return dead_; }
     void destroy();
 
 private:
@@ -96,6 +163,11 @@ private:
     winfg::Config cfg_{};
     bool fgReady_ = false;
     bool foreignQueue_ = false;
+    /** Driver reported the surface/device gone; this session cannot present again. */
+    bool dead_ = false;
+    float refreshHz_ = 60.0f;
+    uint64_t lastCaptureNs_ = 0;
+    uint64_t presented_ = 0;
 
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
     VkFormat swapFormat_ = VK_FORMAT_UNDEFINED;
@@ -486,14 +558,21 @@ void Renderer::resize(int width, int height) {
     vkDeviceWaitIdle(device_);
     destroySwapchain();
     extent_ = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
-    if (!createSwapchain()) return;
+    if (!createSwapchain()) {
+        // Retrying every frame would allocate a swapchain per capture; let the
+        // Java side rebuild the window and the renderer instead.
+        dead_ = true;
+        return;
+    }
     fg_.onResize(extent_, VK_FORMAT_R8G8B8A8_UNORM, true);
     createOffscreen();
 }
 
-bool Renderer::init(ANativeWindow* window, int width, int height, const winfg::Config& cfg) {
+bool Renderer::init(ANativeWindow* window, int width, int height, float refreshHz,
+                    const winfg::Config& cfg) {
     window_ = window;
     cfg_ = cfg;
+    refreshHz_ = (refreshHz > 1.0f && refreshHz < 1000.0f) ? refreshHz : 60.0f;
     extent_ = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
     if (!createInstance(window_)) return false;
     if (!pickDevice()) return false;
@@ -655,9 +734,9 @@ void Renderer::waitFence() {
     }
 }
 
-void Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
+bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     std::lock_guard<std::mutex> guard(lock_);
-    if (!device_ || !buffer || swapchain_ == VK_NULL_HANDLE) return;
+    if (!device_ || dead_ || !buffer || swapchain_ == VK_NULL_HANDLE) return false;
 
     AHardwareBuffer_Desc desc{};
     AHardwareBuffer_describe(buffer, &desc);
@@ -665,44 +744,91 @@ void Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     int h = static_cast<int>(desc.height);
     if (w != static_cast<int>(extent_.width) || h != static_cast<int>(extent_.height)) {
         resize(w, h);
-        if (swapchain_ == VK_NULL_HANDLE) return;
+        if (swapchain_ == VK_NULL_HANDLE || !prev_.image || !curr_.image || !generated_.image) {
+            return false;
+        }
     }
 
     AhbImage ahb{};
-    if (!importAhb(buffer, w, h, ahb)) return;
+    if (!importAhb(buffer, w, h, ahb)) return false;
 
     waitFence();
     vkResetFences(device_, 1, &fence_);
 
+    // Never wait forever for an image. If the present queue is saturated (the game
+    // already runs at the display rate, or SurfaceFlinger stalls), a blocking acquire
+    // freezes this thread while it holds the renderer lock; the main thread then
+    // blocks on the same lock and the app is ANR-killed. Dropping a frame is safe.
     uint32_t realIndex = 0;
-    VkResult ar = vkAcquireNextImageKHR(device_, swapchain_, UINT64_MAX,
+    VkResult ar = vkAcquireNextImageKHR(device_, swapchain_, 250000000ull,
                                         acquireReal_, VK_NULL_HANDLE, &realIndex);
+    if (ar == VK_TIMEOUT || ar == VK_NOT_READY) {
+        destroyAhb(ahb);
+        return false;
+    }
     if (ar == VK_ERROR_OUT_OF_DATE_KHR) {
         destroyAhb(ahb);
         int w0 = static_cast<int>(extent_.width);
         int h0 = static_cast<int>(extent_.height);
         extent_ = {0, 0};
         resize(w0, h0);
-        return;
+        return false;
+    }
+    if (ar == VK_ERROR_SURFACE_LOST_KHR || ar == VK_ERROR_DEVICE_LOST) {
+        destroyAhb(ahb);
+        dead_ = true;
+        LOGE("swapchain lost on acquire: %d", (int)ar);
+        return false;
     }
     if (ar != VK_SUCCESS && ar != VK_SUBOPTIMAL_KHR) {
         destroyAhb(ahb);
         LOGW("acquire real failed: %d", (int)ar);
-        return;
+        return false;
     }
     if (realIndex >= swapImages_.size()) {
         destroyAhb(ahb);
         LOGW("acquire returned out-of-range image %u", realIndex);
-        return;
+        return false;
     }
+
+    // Insert a generated frame only when the capture rate leaves a free vsync slot,
+    // i.e. the source runs slower than the display. Presenting two images per capture
+    // unconditionally asks a 60 Hz panel for 120 fps; the swapchain queue then backs
+    // up and the pipeline stalls. (At 60 fps capture/60 Hz display there is nothing
+    // to double, at 30 fps capture there is.)
+    uint64_t deltaNs = (lastCaptureNs_ != 0 && timestampNs > lastCaptureNs_)
+            ? timestampNs - lastCaptureNs_ : 0;
+    lastCaptureNs_ = timestampNs;
+    const uint64_t vsyncNs = static_cast<uint64_t>(1e9 / refreshHz_);
+    const bool canInsert = prevValid_ && swapImages_.size() >= 3 &&
+            deltaNs >= (vsyncNs * 18) / 10;
 
     uint32_t spareIndex = 0;
     bool haveSpare = false;
-    VkResult sr = vkAcquireNextImageKHR(device_, swapchain_, 2000000ull,
-                                        acquireSpare_, VK_NULL_HANDLE, &spareIndex);
-    if ((sr == VK_SUCCESS || sr == VK_SUBOPTIMAL_KHR)
-            && spareIndex != realIndex && spareIndex < swapImages_.size()) {
-        haveSpare = true;
+    if (canInsert) {
+        VkResult sr = vkAcquireNextImageKHR(device_, swapchain_, 250000000ull,
+                                            acquireSpare_, VK_NULL_HANDLE, &spareIndex);
+        if (sr == VK_ERROR_SURFACE_LOST_KHR || sr == VK_ERROR_DEVICE_LOST) {
+            destroyAhb(ahb);
+            dead_ = true;
+            LOGE("swapchain lost on spare acquire: %d", (int)sr);
+            return false;
+        }
+        const bool acquired = sr == VK_SUCCESS || sr == VK_SUBOPTIMAL_KHR;
+        haveSpare = acquired && spareIndex != realIndex && spareIndex < swapImages_.size();
+        if (acquired && !haveSpare && spareIndex < swapImages_.size()) {
+            // Hand an unusable acquired image straight back: an image left acquired
+            // starves the swapchain, and its signalled acquire semaphore must be
+            // consumed before it can be used as a submit wait again (undefined
+            // behaviour that can wedge the Adreno driver).
+            VkPresentInfoKHR psi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+            psi.waitSemaphoreCount = 1;
+            psi.pWaitSemaphores = &acquireSpare_;
+            psi.swapchainCount = 1;
+            psi.pSwapchains = &swapchain_;
+            psi.pImageIndices = &spareIndex;
+            vkQueuePresentKHR(queue_, &psi);
+        }
     }
 
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -817,7 +943,7 @@ void Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     if (vkQueueSubmit(queue_, 1, &si, fence_) != VK_SUCCESS) {
         LOGE("overlay submit failed");
         destroyAhb(ahb);
-        return;
+        return false;
     }
     fenceInFlight_ = true;
 
@@ -838,15 +964,22 @@ void Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     pri.pSwapchains = &swapchain_;
     pri.pImageIndices = &realIndex;
     VkResult pr = vkQueuePresentKHR(queue_, &pri);
-    if (pr != VK_SUCCESS) LOGW("present real failed: %d", (int)pr);
+    if (pr == VK_ERROR_SURFACE_LOST_KHR || pr == VK_ERROR_DEVICE_LOST) {
+        dead_ = true;
+        LOGE("swapchain lost on present: %d", (int)pr);
+    } else if (pr != VK_SUCCESS) {
+        LOGW("present real failed: %d", (int)pr);
+    }
 
     waitFence();
     destroyAhb(ahb);
     prevValid_ = true;
-    if ((timestampNs & 0x3f) == 0) {
+    ++presented_;
+    if ((presented_ & 0x3f) == 0) {
         LOGI("frame %llu %dx%d%s", (unsigned long long)timestampNs, w, h,
              haveSpare ? " 2x" : " passthrough");
     }
+    return pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR;
 }
 
 void Renderer::destroy() {
@@ -895,10 +1028,18 @@ void Renderer::destroy() {
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_winfg_launcher_OverlayRenderer_nativeCreate(
         JNIEnv* env, jclass, jobject surface, jint width, jint height,
+        jfloat refreshHz, jstring crashDir,
         jint model, jint multiplier, jint perfPreset, jfloat flowScale,
         jint gmMode, jint frMode, jint frIters, jfloat frLambda, jfloat frDt,
         jfloat frEdge, jfloat frEps, jint extraImages, jboolean pacing) {
     if (surface == nullptr || width <= 0 || height <= 0) return 0;
+    if (crashDir != nullptr) {
+        const char* dir = env->GetStringUTFChars(crashDir, nullptr);
+        if (dir != nullptr) {
+            installSignalHandlers(dir);
+            env->ReleaseStringUTFChars(crashDir, dir);
+        }
+    }
     ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
     if (!window) {
         LOGE("ANativeWindow_fromSurface failed");
@@ -924,7 +1065,7 @@ Java_com_winfg_launcher_OverlayRenderer_nativeCreate(
     cfg.sanitize();
 
     Renderer* renderer = new Renderer();
-    if (!renderer->init(window, width, height, cfg)) {
+    if (!renderer->init(window, width, height, refreshHz, cfg)) {
         renderer->destroy();  // owns and releases window_
         delete renderer;
         return 0;
@@ -932,14 +1073,17 @@ Java_com_winfg_launcher_OverlayRenderer_nativeCreate(
     return reinterpret_cast<jlong>(renderer);
 }
 
-extern "C" JNIEXPORT void JNICALL
+extern "C" JNIEXPORT jint JNICALL
 Java_com_winfg_launcher_OverlayRenderer_nativeSubmit(
         JNIEnv* env, jclass, jlong handle, jobject buffer, jlong timestampNs) {
-    if (handle == 0 || buffer == nullptr) return;
+    if (handle == 0 || buffer == nullptr) return 0;
     AHardwareBuffer* ahb = AHardwareBuffer_fromHardwareBuffer(env, buffer);
-    if (!ahb) return;
-    reinterpret_cast<Renderer*>(handle)->submit(ahb, static_cast<uint64_t>(timestampNs));
+    if (!ahb) return 0;
+    Renderer* renderer = reinterpret_cast<Renderer*>(handle);
+    const bool presented = renderer->submit(ahb, static_cast<uint64_t>(timestampNs));
     AHardwareBuffer_release(ahb);
+    if (!presented && renderer->dead()) return -1;
+    return presented ? 1 : 0;
 }
 
 extern "C" JNIEXPORT void JNICALL

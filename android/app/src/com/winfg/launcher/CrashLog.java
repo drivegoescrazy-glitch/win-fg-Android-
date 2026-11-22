@@ -4,6 +4,7 @@ import android.content.Context;
 import android.util.Log;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
 import java.io.PrintWriter;
@@ -47,5 +48,33 @@ final class CrashLog {
             }
             if (previous != null) previous.uncaughtException(thread, error);
         });
+    }
+
+    /**
+     * Returns (and clears) the report a native renderer fault left behind. A Vulkan
+     * driver crash kills the whole process, taking the notification with it, so this
+     * file is the only way the failure reaches the user without adb.
+     */
+    static String takeNativeReport(Context context) {
+        File file = new File(new File(context.getFilesDir(), EngineManager.DIR),
+                "native_crash.log");
+        if (!file.isFile()) return null;
+        try {
+            int size = (int) Math.min(file.length(), 8192);
+            if (size <= 0) {
+                file.delete();
+                return null;
+            }
+            byte[] data = new byte[size];
+            int off = 0;
+            try (FileInputStream in = new FileInputStream(file)) {
+                int n;
+                while (off < size && (n = in.read(data, off, size - off)) > 0) off += n;
+            }
+            file.delete();
+            return new String(data, 0, off, "UTF-8");
+        } catch (Throwable t) {
+            return null;
+        }
     }
 }

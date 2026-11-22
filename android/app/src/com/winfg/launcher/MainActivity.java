@@ -101,6 +101,7 @@ public final class MainActivity extends Activity {
         setupSettings();
         setupEngine();
         showTab(0);
+        showNativeCrashIfAny();
 
         io.execute(() -> {
             try {
@@ -114,6 +115,17 @@ public final class MainActivity extends Activity {
     @SuppressWarnings("unchecked")
     private <T extends View> T f(int id) {
         return (T) findViewById(id);
+    }
+
+    /** A native renderer fault is unreadable without adb; surface it on the next start. */
+    private void showNativeCrashIfAny() {
+        String report = CrashLog.takeNativeReport(this);
+        if (report == null) return;
+        new AlertDialog.Builder(this)
+                .setTitle("Win-FG overlay crashed")
+                .setMessage(report)
+                .setPositiveButton("Close", null)
+                .show();
     }
 
     private void showTab(int index) {
