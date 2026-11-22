@@ -26,9 +26,17 @@ properties at device init and re-reads them live when the revision changes, so
 launching a game applies the selected profile even though another app cannot
 write into that game's private files.
 
-Without root the app still works as a settings editor + launcher + exporter; the
-layer must be loaded by a host (e.g. Winlator/Bannerlator) that already consumes
-win-fg. The system-wide install is the only part that needs root.
+Without root the app can also run a MediaProjection overlay: Android 12+ can
+capture one app, and the overlay excludes itself with SurfaceFlinger's
+skip-screenshot flag so the generated frames do not feed back into capture.
+Android 12/13 has no public single-app capture, so the overlay uses a non-SDK
+lookup exempted at runtime; no root or LSPosed install is required. The app
+handles frame generation itself when the overlay is active. The system-wide
+Vulkan layer install is still the only part that needs root.
+
+Secure/DRM windows (`FLAG_SECURE`) cannot be captured by MediaProjection, with
+or without root; those games render black and need a rooted capture path.
+Hardware H.264 decoding plus GPU optical flow is required for usable latency.
 
 ## Build
 
@@ -37,7 +45,7 @@ win-fg. The system-wide install is the only part that needs root.
 bash android/build_apk.sh
 ```
 
-Output: `android/dist/win-fg-v1.0.apk` (versionCode 1), arm64-v8a engine, signed.
+Output: `android/dist/win-fg-v1.3.apk` (versionCode 4), arm64-v8a engine, signed.
 The script is also what CI runs on tags.
 
 ## Release key — do not lose it

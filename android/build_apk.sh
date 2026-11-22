@@ -33,6 +33,9 @@ export PATH="$(dirname "$CMAKE"):$PATH"
 
 BUILD_TOOLS="$SDK/build-tools/35.0.0"
 ANDROID_JAR="$SDK/platforms/android-35/android.jar"
+LIBS="$ANDROID_DIR/libs"
+HIDDENAPI_JAR="$LIBS/hiddenapibypass-6.1.jar"
+[ -f "$HIDDENAPI_JAR" ] || { echo "missing $HIDDENAPI_JAR"; exit 1; }
 [ -x "$BUILD_TOOLS/aapt2" ] || { echo "build-tools 35.0.0 missing in $SDK"; exit 1; }
 [ -f "$ANDROID_JAR" ] || { echo "platform android-35 missing in $SDK"; exit 1; }
 [ -f "$NDK/build/cmake/android.toolchain.cmake" ] || { echo "NDK missing: $NDK"; exit 1; }
@@ -88,11 +91,11 @@ echo "[apk] compiling Java"
 find "$APP/src" -name '*.java' > "$BUILD/sources.txt"
 find "$BUILD/gen" -name '*.java' >> "$BUILD/sources.txt"
 "$JAVA_HOME/bin/javac" -source 11 -target 11 -encoding UTF-8 -Xlint:-options \
-  -classpath "$ANDROID_JAR" -d "$BUILD/classes" @"$BUILD/sources.txt"
+  -classpath "$ANDROID_JAR:$HIDDENAPI_JAR" -d "$BUILD/classes" @"$BUILD/sources.txt"
 
 echo "[apk] dexing"
 "$BUILD_TOOLS/d8" --lib "$ANDROID_JAR" --min-api 26 --output "$BUILD/dex" \
-  $(find "$BUILD/classes" -name '*.class' -print)
+  "$HIDDENAPI_JAR" $(find "$BUILD/classes" -name '*.class' -print)
 cp "$BUILD/dex/classes.dex" "$BUILD/classes.dex"
 ( cd "$BUILD" && zip -q -X unsigned.apk classes.dex )
 

@@ -36,6 +36,8 @@ import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 
+import org.lsposed.hiddenapibypass.HiddenApiBypass;
+
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
@@ -91,6 +93,8 @@ public final class OverlayService extends Service {
     private int captureWidth;
     private int captureHeight;
     private volatile boolean captureExclusionReady;
+    private static volatile boolean hiddenApiExempted;
+    private int exclusionRetries;
     private boolean appOnlyCapture;
     private long capturedFrames;
     private boolean frameLoopRunning;
@@ -220,16 +224,24 @@ public final class OverlayService extends Service {
 
             @Override public void onSurfaceTextureSizeChanged(SurfaceTexture st, int width, int height) {
                 st.setDefaultBufferSize(screenWidth(), screenHeight());
-                surfaceWidth = width;
-                surfaceHeight = height;
-                ensureRenderer(width, height);
-                resizeCapture(width, height);
+                if (projection == null) {
+                    surfaceWidth = width;
+                    surfaceHeight = height;
+                    ensureRenderer(width, height);
+                    // Recreating the reader after MediaProjection has started
+                    // closes the live consumer during SurfaceFlinger's dequeue.
+                    resizeCapture(width, height);
+                }
                 installSkipScreenshot(overlayView);
             }
 
             @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
                 surfaceReady = false;
                 stopFrameLoop();
+                // Tear down the projection before the renderer that consumes it;
+                // otherwise SurfaceFlinger keeps a producer aimed at a released
+                // ImageReader surface.
+                stopCapture();
                 synchronized (rendererLock) {
                     if (renderer != null) {
                         renderer.stop();
@@ -341,6 +353,20 @@ public final class OverlayService extends Service {
         }
     }
 
+    private static void exemptViewHiddenApis() {
+        if (hiddenApiExempted) return;
+        synchronized (OverlayService.class) {
+            if (hiddenApiExempted) return;
+            try {
+                boolean ok = HiddenApiBypass.addHiddenApiExemptions("Landroid/view/");
+                Log.i(TAG, "hidden API exemption for android.view: " + ok);
+            } catch (Throwable t) {
+                Log.e(TAG, "hidden API exemption failed", t);
+            }
+            hiddenApiExempted = true;
+        }
+    }
+
     private void startProjection() {
         if (projection != null || resultData == null || !surfaceReady
                 || surfaceWidth <= 0 || surfaceHeight <= 0) {
@@ -349,12 +375,23 @@ public final class OverlayService extends Service {
         synchronized (rendererLock) {
             if (renderer == null) return;
         }
+        Log.i(TAG, "starting projection: sdk=" + Build.VERSION.SDK_INT
+                + " targetSdk=" + getApplicationInfo().targetSdkVersion
+                + " exclusion=" + captureExclusionReady
+                + " appOnly=" + appOnlyCapture);
         if (!captureExclusionReady && !appOnlyCapture) {
+            installSkipScreenshot(overlayView);
+            if (exclusionRetries++ < 4) {
+                Log.w(TAG, "capture exclusion not ready; retry " + exclusionRetries);
+                captureHandler.postDelayed(this::startProjection, 250);
+                return;
+            }
             Log.e(TAG, "capture exclusion unavailable; refusing to mirror own overlay");
-            toast("This device blocks overlay capture exclusion; overlay cannot start");
+            toast("Overlay capture exclusion failed. Update Android or report this device.");
             stopSelf();
             return;
         }
+        exclusionRetries = 0;
         if (!captureExclusionReady) {
             Log.w(TAG, "skipScreenshot unavailable; relying on app-only MediaProjection capture");
         }
@@ -402,13 +439,7 @@ public final class OverlayService extends Service {
 
     private void createReader(int width, int height) {
         ImageReader old = reader;
-        if (Build.VERSION.SDK_INT >= 29) {
-            reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 5,
-                    HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE
-                            | HardwareBuffer.USAGE_GPU_COLOR_OUTPUT);
-        } else {
-            reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 5);
-        }
+        reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 4);
         reader.setOnImageAvailableListener(this::onImageAvailable, captureHandler);
         captureWidth = width;
         captureHeight = height;
@@ -424,6 +455,9 @@ public final class OverlayService extends Service {
             if (image == null) return;
             HardwareBuffer buffer = image.getHardwareBuffer();
             if (buffer == null) return;
+            if (capturedFrames == 0) {
+                Log.i(TAG, "first capture frame " + captureWidth + "x" + captureHeight);
+            }
             synchronized (rendererLock) {
                 if (renderer != null) renderer.submit(buffer, image.getTimestamp());
             }
@@ -548,6 +582,7 @@ public final class OverlayService extends Service {
     private void installSkipScreenshot(View host) {
         Runnable apply = () -> {
             try {
+                exemptViewHiddenApis();
                 Method getVri = View.class.getDeclaredMethod("getViewRootImpl");
                 getVri.setAccessible(true);
                 Object vri = getVri.invoke(host);
