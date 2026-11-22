@@ -17,7 +17,8 @@ import java.io.StringWriter;
  * driver; when one of them fails on a specific device the only evidence is the
  * crash itself. This keeps the default handler (the app still crashes as before,
  * so Android's own report stays valid) but mirrors the trace to
- * {@code files/win-fg/crash.log} and logcat under the {@code win-fg-overlay} tag.</p>
+ * {@code files/win-fg/crash.log}, logcat under the {@code win-fg-overlay} tag, and the
+ * crash-report queue that files an issue on GitHub (see {@link CrashReports}).</p>
  */
 final class CrashLog {
     private static volatile boolean installed;
@@ -43,6 +44,14 @@ final class CrashLog {
                         out.write(text.toString().getBytes("UTF-8"));
                     }
                 }
+                // Queue it for the issue tracker before the process is gone. This runs in a
+                // dying thread, so it keeps to a small file write.
+                String title = "[crash] " + error.getClass().getSimpleName()
+                        + (error.getMessage() == null ? "" : ": " + clip(error.getMessage(), 70))
+                        + " · v" + AppInfo.VERSION_NAME;
+                CrashReports.enqueue(context, "java", title,
+                        CrashReports.describe(context) + "\n### Java trace\n\n```\n"
+                                + text.toString().trim() + "\n```\n");
             } catch (Throwable ignored) {
                 // Never replace the real crash with a logging failure.
             }
@@ -50,11 +59,23 @@ final class CrashLog {
         });
     }
 
+    private static String clip(String s, int max) {
+        String flat = s.replace('\n', ' ').trim();
+        return flat.length() <= max ? flat : flat.substring(0, max) + "…";
+    }
+
     /**
-     * Returns (and clears) the report a native renderer fault left behind. A Vulkan
-     * driver crash kills the whole process, taking the notification with it, so this
-     * file is the only way the failure reaches the user without adb.
+     * Returns (and clears) the report a native renderer fault left behind, queueing it for
+     * the tracker on the way. A Vulkan driver crash kills the whole process, taking the
+     * notification with it, so this file is the only way the failure reaches the user
+     * without adb.
      */
+    static String collectNativeReport(Context context) {
+        String text = takeNativeReport(context);
+        if (text != null && !text.trim().isEmpty()) CrashReports.enqueueNative(context, text);
+        return text;
+    }
+
     static String takeNativeReport(Context context) {
         File file = new File(new File(context.getFilesDir(), EngineManager.DIR),
                 "native_crash.log");

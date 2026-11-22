@@ -65,6 +65,42 @@
             android:padding="16dp"
             android:layout_marginBottom="12dp">
 
+            <TextView style="@style/SectionLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="CRASH REPORTS" />
+
+            <TextView
+                android:id="@+id/crash_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="No crash reports"
+                android:textColor="@color/muted"
+                android:textSize="11sp" />
+
+            <Button
+                android:id="@+id/btn_crash_report"
+                style="@style/SecondaryButton"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:layout_marginTop="8dp"
+                android:enabled="false"
+                android:text="SEND CRASH REPORT" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="A crash or a native renderer fault is saved with its trace, device and profile. Sending opens a prefilled GitHub issue on the project tracker, so a failure can be fixed without adb or a screenshot."
+                android:textColor="@color/muted"
+                android:textSize="10sp" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:background="@drawable/bg_card"
+            android:padding="16dp"
+            android:layout_marginBottom="12dp">
+
             <TextView style="@style/SectionLabel" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="BUNDLED ENGINE" />
 
             <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:paddingBottom="8dp">

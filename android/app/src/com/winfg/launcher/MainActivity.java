@@ -8,6 +8,8 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.ActivityNotFoundException;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
@@ -70,6 +72,8 @@ public final class MainActivity extends Activity {
     private boolean notificationAsked;
     private TextView overlayStatus;
     private Button overlayNow;
+    private TextView crashStatus;
+    private Button crashReport;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Runnable profileWriter =
@@ -117,10 +121,17 @@ public final class MainActivity extends Activity {
         return (T) findViewById(id);
     }
 
-    /** A native renderer fault is unreadable without adb; surface it on the next start. */
+    /**
+     * A native renderer fault is unreadable without adb; surface it on the next start and
+     * offer to file it on the tracker. The report is already queued by the collector, so
+     * choosing an overlay mode does not lose it.
+     */
     private void showNativeCrashIfAny() {
-        String report = CrashLog.takeNativeReport(this);
-        if (report == null) return;
+        String report = CrashLog.collectNativeReport(this);
+        if (report == null) {
+            maybePromptCrashReports();
+            return;
+        }
         // The renderer died inside the GPU driver or the native pipeline. Run the next
         // session as a capture-only mirror so the overlay still works, and let the user
         // opt back into frame generation once the cause is understood.
@@ -129,14 +140,98 @@ public final class MainActivity extends Activity {
         new AlertDialog.Builder(this)
                 .setTitle("Win-FG renderer crashed")
                 .setMessage(report + "\n\nThe overlay will start in mirror-only mode (capture,"
-                        + " no generated frames). Choose Retry to try frame generation again.")
+                        + " no generated frames). Choose Retry to try frame generation again."
+                        + "\n\nThis report is saved in Engine → CRASH REPORTS.")
                 .setPositiveButton("Retry frame generation", (d, w) -> {
                     settings.mirrorOnly = false;
                     settings.save(this);
                     updateOverlayUi();
                 })
                 .setNegativeButton("Mirror only", null)
+                .setNeutralButton("Report on GitHub", (d, w) -> {
+                    CrashReports.Report r = CrashReports.latest(this);
+                    if (r != null) sendReport(r);
+                })
                 .show();
+    }
+
+    /** Nudges once per launch while a crash report is still waiting to be filed. */
+    private void maybePromptCrashReports() {
+        List<CrashReports.Report> pending = CrashReports.pending(this);
+        if (pending.isEmpty()) return;
+        final CrashReports.Report first = pending.get(0);
+        String title = pending.size() == 1
+                ? "Crash report ready" : pending.size() + " crash reports ready";
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setMessage(first.label()
+                        + "\n\nSending opens a prefilled issue on the Win-FG GitHub tracker,"
+                        + " with the trace, device and frame-gen profile already in it.")
+                .setPositiveButton("Report on GitHub", (d, w) -> sendReport(first))
+                .setNegativeButton("Not now", null)
+                .setNeutralButton("Show all", (d, w) -> showCrashReports())
+                .show();
+    }
+
+    /** Opens the prefilled issue for a report in the browser and remembers it. */
+    private void sendReport(CrashReports.Report r) {
+        String url = CrashReports.issueUrl(r);
+        CrashReports.markReported(this, r, url);
+        openUrl(url);
+        refreshCrashStatus();
+    }
+
+    private void showCrashReports() {
+        List<CrashReports.Report> pending = CrashReports.pending(this);
+        if (pending.isEmpty()) {
+            toast("No crash reports to send");
+            return;
+        }
+        String[] labels = new String[pending.size()];
+        for (int i = 0; i < labels.length; i++) {
+            CrashReports.Report r = pending.get(i);
+            labels[i] = (r.reported() ? "✓ " : "") + r.label();
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Crash reports")
+                .setItems(labels, (d, which) -> sendReport(pending.get(which)))
+                .setPositiveButton("Close", null)
+                .setNeutralButton("Copy latest", (d, w) -> copyReport(pending.get(0)))
+                .setNegativeButton("Clear", (d, w) -> {
+                    CrashReports.clear(this);
+                    refreshCrashStatus();
+                    toast("Crash reports cleared");
+                })
+                .show();
+    }
+
+    private void copyReport(CrashReports.Report r) {
+        try {
+            ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (cm == null) return;
+            cm.setPrimaryClip(ClipData.newPlainText(r.title, r.body));
+            toast("Crash report copied");
+        } catch (Throwable t) {
+            toast("Could not copy the report");
+        }
+    }
+
+    private void refreshCrashStatus() {
+        if (crashStatus == null) return;
+        List<CrashReports.Report> pending = CrashReports.pending(this);
+        if (pending.isEmpty()) {
+            crashStatus.setText("No crash reports · a fault is saved here and can be filed"
+                    + " on GitHub in one tap");
+            crashStatus.setTextColor(getColor(R.color.muted));
+            if (crashReport != null) crashReport.setEnabled(false);
+            return;
+        }
+        int unsent = 0;
+        for (CrashReports.Report r : pending) if (!r.reported()) unsent++;
+        crashStatus.setText(pending.size() + " saved · " + unsent + " not yet filed · "
+                + pending.get(0).label());
+        crashStatus.setTextColor(getColor(R.color.accent));
+        if (crashReport != null) crashReport.setEnabled(true);
     }
 
     private void showTab(int index) {
@@ -620,6 +715,10 @@ public final class MainActivity extends Activity {
             }
         });
 
+        crashStatus = f(R.id.crash_status);
+        crashReport = f(R.id.btn_crash_report);
+        crashReport.setOnClickListener(v -> showCrashReports());
+
         f(R.id.btn_hostfolder).setOnClickListener(v -> pickHostFolder());
         f(R.id.btn_export_conf).setOnClickListener(v -> exportConf());
         f(R.id.btn_updates).setOnClickListener(v -> openUrl(AppInfo.RELEASES_URL));
@@ -627,6 +726,7 @@ public final class MainActivity extends Activity {
         refreshEngineInfo();
         refreshHostLabel();
         refreshNotice();
+        refreshCrashStatus();
         updateOverlayUi();
     }
 

@@ -48,7 +48,7 @@ Hardware H.264 decoding plus GPU optical flow is required for usable latency.
 bash android/build_apk.sh
 ```
 
-Output: `android/dist/win-fg-v1.9.apk` (versionCode 10), arm64-v8a engine, signed.
+Output: `android/dist/win-fg-v1.10.apk` (versionCode 11), arm64-v8a engine, signed.
 The script is also what CI runs on tags.
 
 ## Release key — do not lose it
@@ -62,6 +62,21 @@ new APK over the old one — no uninstall needed.
 
 Because the key is committed for update continuity, treat it as a project-shared
 release key, not a secret for defending a high-value app store identity.
+
+## Crash reports
+
+A fault on a device with no adb used to be a screenshot of a dialog. Every crash
+(uncaught Java exception or native renderer signal) is now saved as a report under
+`files/win-fg/crash-reports/` with the launcher build, device, Android version, ABI,
+display, overlay mode and frame-gen profile. Reports are deduplicated by the structure
+of their trace, so a repeated fault counts up (`×3`) instead of filing duplicates.
+
+**Engine → CRASH REPORTS → SEND CRASH REPORT** opens a prefilled GitHub issue on
+`drivegoescrazy-glitch/win-fg-Android-` with the title and body already filled in. The
+same offer appears in the native-crash dialog and as a prompt on the next launch. Filing
+goes through the user's own browser session: the APK carries no GitHub token, and no token
+is ever stored on the device. `Copy latest` puts the full report on the clipboard for a
+manual paste.
 
 ## Notes
 
