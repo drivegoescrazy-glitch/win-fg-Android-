@@ -168,6 +168,22 @@ public:
      *  lastDeltaMs (negative = below the insert threshold), lastVsyncMs. */
     int lastPresents() const { return lastPresents_; }
 
+    /** Presents the generated frame held back by the last submit, if any. */
+    void presentPending() {
+        std::lock_guard<std::mutex> lk(pendingMutex_);
+        if (!pendingValid_) return;
+        pendingValid_ = false;
+        if (swapchain_ == VK_NULL_HANDLE || pendingSpareIndex_ >= swapImages_.size()) return;
+        VkPresentInfoKHR psi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+        psi.waitSemaphoreCount = 1;
+        psi.pWaitSemaphores = &renderSpare_;
+        psi.swapchainCount = 1;
+        psi.pSwapchains = &swapchain_;
+        psi.pImageIndices = &pendingSpareIndex_;
+        VkResult pr = vkQueuePresentKHR(queue_, &psi);
+        if (pr != VK_SUCCESS) LOGW("present generated failed: %d", (int)pr);
+    }
+
     void readStats(int32_t* out, int n) const {
         const int32_t v[10] = { stGenerated_, stFgOff_, stFirst_, stNoSpare_, stNoInterval_,
                                 stSpareFail_, stPass_, stDeltaMs_, stVsyncMs_, lastReason_ };
@@ -228,6 +244,10 @@ private:
     int32_t stGenerated_ = 0, stFgOff_ = 0, stFirst_ = 0, stNoSpare_ = 0,
             stNoInterval_ = 0, stSpareFail_ = 0, stPass_ = 0;
     int32_t stDeltaMs_ = 0, stVsyncMs_ = 0;
+    // Deferred generated present (even cadence).
+    std::mutex pendingMutex_;
+    uint32_t pendingSpareIndex_ = 0;
+    bool pendingValid_ = false;
     /** Presents performed by the last submit: 2 with a generated frame, else 1. */
     int32_t lastPresents_ = 1;
     /** Why this capture produced only one present: 0 generated, 1 fg off, 2 first
@@ -930,6 +950,11 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     stVsyncMs_  = static_cast<int32_t>(vsyncNs / 1000000ull);
     if (noInterval && stDeltaMs_ > 0) stDeltaMs_ = -stDeltaMs_;
 
+    // Flush a generated frame that was held back for the next vsync BEFORE acquiring
+    // a new spare: its present waits on renderSpare_, and that semaphore must not be
+    // re-signalled by the submit below while a present is still pending on it.
+    presentPending();
+
     uint32_t spareIndex = 0;
     bool haveSpare = false;
     if (canInsert) {
@@ -1081,15 +1106,17 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     }
     fenceInFlight_ = true;
 
+    // ── Even cadence ────────────────────────────────────────────────────────
+    // Presenting the generated frame and the real frame back-to-back hands the
+    // compositor two presents inside one vsync interval; one of them is coalesced
+    // away, so the panel still shows a single new image per capture and the result
+    // looks exactly like the source rate even though both presents were counted.
+    // The generated midpoint is therefore held and presented at the next vsync by
+    // presentPending() — that is what turns 30 source frames into 60 seen frames.
     if (haveSpare) {
-        VkPresentInfoKHR psi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-        psi.waitSemaphoreCount = 1;
-        psi.pWaitSemaphores = &renderSpare_;
-        psi.swapchainCount = 1;
-        psi.pSwapchains = &swapchain_;
-        psi.pImageIndices = &spareIndex;
-        VkResult pr = vkQueuePresentKHR(queue_, &psi);
-        if (pr != VK_SUCCESS) LOGW("present generated failed: %d", (int)pr);
+        std::lock_guard<std::mutex> lk(pendingMutex_);
+        pendingSpareIndex_ = spareIndex;
+        pendingValid_ = true;
     }
     VkPresentInfoKHR pri{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
     pri.waitSemaphoreCount = 1;
@@ -1254,6 +1281,13 @@ Java_com_winfg_launcher_OverlayRenderer_nativeSubmit(
     if (!presented && renderer->dead()) return -1;
     // 2 when a generated frame was also presented, 1 for a passthrough present.
     return presented ? renderer->lastPresents() : 0;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_winfg_launcher_OverlayRenderer_nativePresentPending(
+        JNIEnv*, jclass, jlong handle) {
+    if (handle == 0) return;
+    reinterpret_cast<Renderer*>(handle)->presentPending();
 }
 
 extern "C" JNIEXPORT void JNICALL

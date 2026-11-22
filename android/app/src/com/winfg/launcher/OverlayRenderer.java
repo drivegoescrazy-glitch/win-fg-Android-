@@ -75,6 +75,19 @@ public final class OverlayRenderer {
         }
     }
 
+    /**
+     * Presents the generated frame the engine held back after the last submit.
+     * Called from a vsync callback so the generated and real frames land on
+     * consecutive refreshes instead of the same one.
+     */
+    public void presentPending() {
+        long h = handle;
+        if (!LOADED || h == 0) return;
+        try {
+            nativePresentPending(h);
+        } catch (Throwable ignored) {}
+    }
+
     public void stop() {
         long h = handle;
         handle = 0;
@@ -95,6 +108,8 @@ public final class OverlayRenderer {
                                             boolean pacing, int synthMode);
 
     private static native int nativeSubmit(long handle, HardwareBuffer buffer, long timestampNs);
+
+    private static native void nativePresentPending(long handle);
 
     private static native void nativeStats(long handle, int[] out);
 

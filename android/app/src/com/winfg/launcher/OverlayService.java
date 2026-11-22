@@ -152,6 +152,20 @@ public final class OverlayService extends Service {
     private boolean rendererLost;
     private final Runnable hideHud = () -> { /* the badge is intentionally permanent */ };
 
+    /**
+     * Presents the generated frame half a refresh after the real one. Without this
+     * the two presents land in the same vsync interval, the compositor coalesces
+     * one away, and a perfectly generated 60 fps stream looks identical to 30.
+     */
+    private final Runnable presentPendingRun = () -> {
+        synchronized (rendererLock) {
+            if (renderer != null) renderer.presentPending();
+        }
+    };
+    /** Runs at the next refresh boundary, which is where the held frame belongs. */
+    private final Choreographer.FrameCallback presentPendingVsync = frameTimeNanos ->
+            presentPendingRun.run();
+
     public static boolean isRunning() {
         return running;
     }
@@ -1198,6 +1212,16 @@ public final class OverlayService extends Service {
                 if (targetPackage != null) main.post(this::launchTarget);
                 countPresentedFrame(presented);
                 logCapture(presented);
+                if (presented >= 2) {
+                    // Vsync-aligned, not a guessed delay: the generated frame must be
+                    // presented on the refresh AFTER the real one. A timer can land
+                    // inside the same interval and be coalesced away again.
+                    main.post(() -> {
+                        Choreographer c = Choreographer.getInstance();
+                        c.removeFrameCallback(presentPendingVsync);
+                        c.postFrameCallback(presentPendingVsync);
+                    });
+                }
             } else if (presented < 0 && !stopping && !rendererLost) {
                 // The driver reported the swapchain gone; rebuild the window and the
                 // renderer instead of silently capturing into nothing.
