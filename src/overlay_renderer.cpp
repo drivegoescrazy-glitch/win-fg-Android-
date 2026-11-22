@@ -173,13 +173,14 @@ public:
         std::lock_guard<std::mutex> lk(pendingMutex_);
         if (!pendingValid_) return;
         pendingValid_ = false;
-        if (swapchain_ == VK_NULL_HANDLE || pendingSpareIndex_ >= swapImages_.size()) return;
+        if (swapchain_ == VK_NULL_HANDLE || pendingSem_ == VK_NULL_HANDLE
+                || pendingIndex_ >= swapImages_.size()) return;
         VkPresentInfoKHR psi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
         psi.waitSemaphoreCount = 1;
-        psi.pWaitSemaphores = &renderSpare_;
+        psi.pWaitSemaphores = &pendingSem_;
         psi.swapchainCount = 1;
         psi.pSwapchains = &swapchain_;
-        psi.pImageIndices = &pendingSpareIndex_;
+        psi.pImageIndices = &pendingIndex_;
         VkResult pr = vkQueuePresentKHR(queue_, &psi);
         if (pr != VK_SUCCESS) LOGW("present generated failed: %d", (int)pr);
     }
@@ -246,7 +247,8 @@ private:
     int32_t stDeltaMs_ = 0, stVsyncMs_ = 0;
     // Deferred generated present (even cadence).
     std::mutex pendingMutex_;
-    uint32_t pendingSpareIndex_ = 0;
+    uint32_t pendingIndex_ = 0;
+    VkSemaphore pendingSem_ = VK_NULL_HANDLE;
     bool pendingValid_ = false;
     /** Presents performed by the last submit: 2 with a generated frame, else 1. */
     int32_t lastPresents_ = 1;
@@ -1114,18 +1116,37 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     // The generated midpoint is therefore held and presented at the next vsync by
     // presentPending() — that is what turns 30 source frames into 60 seen frames.
     if (haveSpare) {
-        std::lock_guard<std::mutex> lk(pendingMutex_);
-        pendingSpareIndex_ = spareIndex;
-        pendingValid_ = true;
+        // The generated image is the midpoint of the last two captures, so it must
+        // be shown BEFORE the frame that was just captured; holding it and
+        // presenting it afterwards plays motion backwards. Present it now, and hold
+        // the real frame for the next refresh instead.
+        VkPresentInfoKHR psi{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+        psi.waitSemaphoreCount = 1;
+        psi.pWaitSemaphores = &renderSpare_;
+        psi.swapchainCount = 1;
+        psi.pSwapchains = &swapchain_;
+        psi.pImageIndices = &spareIndex;
+        VkResult prg = vkQueuePresentKHR(queue_, &psi);
+        if (prg != VK_SUCCESS) LOGW("present generated failed: %d", (int)prg);
     }
-    VkPresentInfoKHR pri{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
-    pri.waitSemaphoreCount = 1;
-    pri.pWaitSemaphores = &renderReal_;
-    pri.swapchainCount = 1;
-    pri.pSwapchains = &swapchain_;
-    pri.pImageIndices = &realIndex;
-    stage("frame present");
-    VkResult pr = vkQueuePresentKHR(queue_, &pri);
+    VkResult pr = VK_SUCCESS;
+    if (haveSpare) {
+        // Hold the real frame; the vsync callback will present it on the next
+        // refresh, one interval after the generated midpoint above.
+        std::lock_guard<std::mutex> lk(pendingMutex_);
+        pendingIndex_ = realIndex;
+        pendingSem_ = renderReal_;
+        pendingValid_ = true;
+    } else {
+        VkPresentInfoKHR pri{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
+        pri.waitSemaphoreCount = 1;
+        pri.pWaitSemaphores = &renderReal_;
+        pri.swapchainCount = 1;
+        pri.pSwapchains = &swapchain_;
+        pri.pImageIndices = &realIndex;
+        stage("frame present");
+        pr = vkQueuePresentKHR(queue_, &pri);
+    }
     if (pr == VK_ERROR_SURFACE_LOST_KHR || pr == VK_ERROR_DEVICE_LOST) {
         dead_ = true;
         LOGE("swapchain lost on present: %d", (int)pr);

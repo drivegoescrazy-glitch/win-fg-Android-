@@ -161,7 +161,12 @@ public final class OverlayService extends Service {
         synchronized (rendererLock) {
             if (renderer != null) renderer.presentPending();
         }
+        logDeferredPresent();
     };
+    // Present-cadence timestamps for the session log.
+    private long lastCaptureNs, captureNs;
+    private boolean deferredLinePending;
+    private long realDelaySumMs, realDelayCount;
     /** Runs at the next refresh boundary, which is where the held frame belongs. */
     private final Choreographer.FrameCallback presentPendingVsync = frameTimeNanos ->
             presentPendingRun.run();
@@ -727,6 +732,7 @@ public final class OverlayService extends Service {
      * a 2-per-capture cadence; after that a 5 s summary keeps the log bounded.
      */
     private void logCapture(int presented) {
+        final long now = System.nanoTime();
         capCount++;
         presentsCount += Math.max(1, presented);
         int reason = 0;
@@ -740,9 +746,28 @@ public final class OverlayService extends Service {
         } else if (reason >= 0 && reason < skipReasons.length) {
             skipReasons[reason]++;
         }
+        long dtMs = lastCaptureNs == 0 ? 0 : (now - lastCaptureNs) / 1_000_000L;
+        lastCaptureNs = now;
+        captureNs = now;
+        if (presented >= 2) {
+            // The line is completed when the held real frame is actually presented,
+            // so both timestamps in it are measured, not estimated.
+            deferredLinePending = true;
+            if (capturedFrames <= 60) note("capture " + capturedFrames + ": dt=" + dtMs + "ms · gen@+0ms");
+        } else if (capturedFrames <= 60) {
+            note("capture " + capturedFrames + ": dt=" + dtMs + "ms · passthrough (" + reasonName(reason) + ")");
+        }
+    }
+
+    /** Records when the held real frame actually went out, relative to its capture. */
+    private void logDeferredPresent() {
+        if (!deferredLinePending) return;
+        deferredLinePending = false;
+        long delayMs = Math.max(0, (System.nanoTime() - captureNs) / 1_000_000L);
+        realDelaySumMs += delayMs;
+        realDelayCount++;
         if (capturedFrames <= 60) {
-            note("capture " + capturedFrames + ": presents=" + Math.max(1, presented)
-                    + (presented >= 2 ? " (generated)" : " (passthrough, " + reasonName(reason) + ")"));
+            note("capture " + capturedFrames + ": real@+" + delayMs + "ms");
         }
     }
 
@@ -907,12 +932,14 @@ public final class OverlayService extends Service {
             if (capCount > 0) {
                 note(String.format(java.util.Locale.US,
                         "presents %d captures → %d presents, %d generated (%.2fx)"
-                        + " · skipped fgOff=%d first=%d noSpare=%d interval=%d acquire=%d",
+                        + " · gen→real %.1f ms · skipped fgOff=%d first=%d noSpare=%d interval=%d acquire=%d",
                         capCount, presentsCount, genCount,
                         presentsCount / (float) Math.max(1, capCount),
+                        realDelayCount == 0 ? 0f : realDelaySumMs / (float) realDelayCount,
                         skipReasons[1], skipReasons[2], skipReasons[3],
                         skipReasons[4], skipReasons[5]));
                 capCount = 0; presentsCount = 0; genCount = 0;
+                realDelaySumMs = 0; realDelayCount = 0;
                 java.util.Arrays.fill(skipReasons, 0);
             }
         }
