@@ -83,6 +83,7 @@ public final class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         CrashLog.install(getApplicationContext());
+        AppSettings.resetMirrorOnlyOnUpgrade(this);
         settings = AppSettings.load(this);
         setContentView(R.layout.activity_main);
 

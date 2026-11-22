@@ -28,6 +28,21 @@ public final class AppSettings {
     /** Capture-only overlay, used after the frame-generation renderer crashed natively. */
     public boolean mirrorOnly = false;
 
+    /**
+     * Drops the capture-only fallback once per new launcher build. The fallback exists
+     * because a renderer crashed natively in the previous build; staying in mirror mode
+     * after an upgrade would silently keep frame generation off even when the cause is
+     * fixed. The crash report itself is not affected — it is queued separately.
+     */
+    public static void resetMirrorOnlyOnUpgrade(Context c) {
+        SharedPreferences p = c.getSharedPreferences(PREF, Context.MODE_PRIVATE);
+        String seen = p.getString("seen_version", null);
+        if (AppInfo.VERSION_NAME.equals(seen)) return;
+        p.edit().putString("seen_version", AppInfo.VERSION_NAME)
+                .putBoolean("mirror_only", false)
+                .apply();
+    }
+
     public static AppSettings load(Context c) {
         SharedPreferences p = c.getSharedPreferences(PREF, Context.MODE_PRIVATE);
         AppSettings s = new AppSettings();

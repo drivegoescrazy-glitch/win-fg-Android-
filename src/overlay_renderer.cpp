@@ -1141,11 +1141,16 @@ extern "C" JNIEXPORT jint JNICALL
 Java_com_winfg_launcher_OverlayRenderer_nativeSubmit(
         JNIEnv* env, jclass, jlong handle, jobject buffer, jlong timestampNs) {
     if (handle == 0 || buffer == nullptr) return 0;
+    // AHardwareBuffer_fromHardwareBuffer() does NOT acquire a reference: the buffer it
+    // returns is owned by the Java HardwareBuffer (android/hardware_buffer_jni.h).
+    // Releasing it here stole that reference, so the ImageReader's buffer was freed while
+    // Java still held it; the next Image.close()/finalizer then released a dead RefBase
+    // and the process died with SIGSEGV inside libutils on the FinalizerDaemon, with no
+    // renderer work in flight (stage: idle). Use the pointer for this call only.
     AHardwareBuffer* ahb = AHardwareBuffer_fromHardwareBuffer(env, buffer);
     if (!ahb) return 0;
     Renderer* renderer = reinterpret_cast<Renderer*>(handle);
     const bool presented = renderer->submit(ahb, static_cast<uint64_t>(timestampNs));
-    AHardwareBuffer_release(ahb);
     if (!presented && renderer->dead()) return -1;
     return presented ? 1 : 0;
 }
