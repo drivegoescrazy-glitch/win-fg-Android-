@@ -166,6 +166,8 @@ public:
 
     /** 9 ints: generated, fgOff, first, noSpare, noInterval, spareFail, passthrough,
      *  lastDeltaMs (negative = below the insert threshold), lastVsyncMs. */
+    int lastPresents() const { return lastPresents_; }
+
     void readStats(int32_t* out, int n) const {
         const int32_t v[9] = { stGenerated_, stFgOff_, stFirst_, stNoSpare_, stNoInterval_,
                                stSpareFail_, stPass_, stDeltaMs_, stVsyncMs_ };
@@ -226,6 +228,8 @@ private:
     int32_t stGenerated_ = 0, stFgOff_ = 0, stFirst_ = 0, stNoSpare_ = 0,
             stNoInterval_ = 0, stSpareFail_ = 0, stPass_ = 0;
     int32_t stDeltaMs_ = 0, stVsyncMs_ = 0;
+    /** Presents performed by the last submit: 2 with a generated frame, else 1. */
+    int32_t lastPresents_ = 1;
     uint64_t presented_ = 0;
 
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
@@ -1097,6 +1101,10 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     stage("idle");
     ++presented_;
     if (haveSpare) ++stGenerated_; else ++stPass_;
+    // Report how many frames actually reached the swapchain for THIS capture. The
+    // Java side used to count one per submit, so the displayed output rate could
+    // never exceed the capture rate no matter how well insertion worked.
+    lastPresents_ = haveSpare ? 2 : 1;
     if ((presented_ & 0x3f) == 0) {
         LOGI("frame %llu %dx%d%s", (unsigned long long)timestampNs, w, h,
              haveSpare ? " 2x" : " passthrough");
@@ -1231,7 +1239,8 @@ Java_com_winfg_launcher_OverlayRenderer_nativeSubmit(
     Renderer* renderer = reinterpret_cast<Renderer*>(handle);
     const bool presented = renderer->submit(ahb, static_cast<uint64_t>(timestampNs));
     if (!presented && renderer->dead()) return -1;
-    return presented ? 1 : 0;
+    // 2 when a generated frame was also presented, 1 for a passthrough present.
+    return presented ? renderer->lastPresents() : 0;
 }
 
 extern "C" JNIEXPORT void JNICALL

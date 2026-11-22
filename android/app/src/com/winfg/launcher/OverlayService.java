@@ -702,10 +702,16 @@ public final class OverlayService extends Service {
         return dir.getAbsolutePath();
     }
 
-    private void countPresentedFrame() {
+    /**
+     * @param frames frames that reached the swapchain for this capture: 2 when a
+     *               generated frame was inserted, 1 for passthrough. Counting one
+     *               per capture made the output rate unable to ever exceed the
+     *               source rate, which is why the badge always read 30 -> 30.
+     */
+    private void countPresentedFrame(int frames) {
         long now = android.os.SystemClock.elapsedRealtime();
         if (hudWindowStart == 0) hudWindowStart = now;
-        hudFrames++;
+        hudFrames += Math.max(1, frames);
         long elapsed = now - hudWindowStart;
         if (elapsed < 500) return;
         int fps = (int) (hudFrames * 1000 / Math.max(1, elapsed));
@@ -1138,7 +1144,7 @@ public final class OverlayService extends Service {
                 // the game take the display: launching earlier rotated and resized the
                 // overlay surface while Vulkan was still initialising.
                 if (targetPackage != null) main.post(this::launchTarget);
-                countPresentedFrame();
+                countPresentedFrame(presented);
             } else if (presented < 0 && !stopping && !rendererLost) {
                 // The driver reported the swapchain gone; rebuild the window and the
                 // renderer instead of silently capturing into nothing.
