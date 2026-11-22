@@ -111,7 +111,9 @@ public final class CaptureActivity extends Activity {
         if (requestCode != REQ_CAPTURE || resultHandled) return;
         resultHandled = true;
         if (resultCode == RESULT_OK && data != null) {
-            OverlayService.start(this, resultCode, data, true);
+            OverlayService.start(this, resultCode, data, true,
+                    getIntent().getStringExtra(EXTRA_PACKAGE),
+                    getIntent().getStringExtra(EXTRA_ACTIVITY));
             Toast.makeText(this, "Win-FG overlay active", Toast.LENGTH_SHORT).show();
         } else {
             Toast.makeText(this, "Screen capture not started", Toast.LENGTH_SHORT).show();

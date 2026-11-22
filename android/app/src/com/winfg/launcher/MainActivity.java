@@ -666,15 +666,21 @@ public final class MainActivity extends Activity {
         }
         if (requestCode == REQ_CAPTURE) {
             if (resultCode == RESULT_OK && data != null) {
-                OverlayService.start(this, resultCode, data, Build.VERSION.SDK_INT >= 34);
-                if (pendingGame != null) {
-                    GameEntry g = pendingGame;
-                    pendingGame = null;
-                    ui.postDelayed(() -> launchGameDirect(g), 600);
+                // The service launches the game itself once capture is live, so the
+                // game never races the start of the capture pipeline.
+                GameEntry g = pendingGame;
+                pendingGame = null;
+                if (g != null) {
+                    settings.save(this);
+                    EngineManager.writeProfile(this, settings);
+                    OverlayService.start(this, resultCode, data,
+                            Build.VERSION.SDK_INT >= 34, g.packageName, g.activityName);
+                    toast("Win-FG overlay starting · " + g.label);
                 } else {
+                    OverlayService.start(this, resultCode, data, Build.VERSION.SDK_INT >= 34);
                     toast("Overlay starting — stop it from the notification");
-                    ui.postDelayed(this::updateOverlayUi, 600);
                 }
+                ui.postDelayed(this::updateOverlayUi, 1200);
             } else {
                 toast("Screen capture denied — launching without overlay");
                 finishPendingLaunch();

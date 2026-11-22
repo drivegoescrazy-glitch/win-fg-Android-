@@ -5,6 +5,7 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
@@ -62,6 +63,8 @@ public final class OverlayService extends Service {
     public static final String EXTRA_RESULT_CODE = "result_code";
     public static final String EXTRA_RESULT_DATA = "result_data";
     public static final String EXTRA_APP_ONLY = "app_only";
+    public static final String EXTRA_TARGET_PACKAGE = "target_package";
+    public static final String EXTRA_TARGET_ACTIVITY = "target_activity";
 
     private static final String CHANNEL = "winfg_overlay";
     private static final int NOTIFICATION_ID = 73;
@@ -97,7 +100,9 @@ public final class OverlayService extends Service {
             HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE | HardwareBuffer.USAGE_GPU_COLOR_OUTPUT;
     private long skippedFrames;
     private int reattachAttempts;
-    private int displayAttempts;
+    private String targetPackage;
+    private String targetActivity;
+    private boolean targetLaunched;
     private static volatile String lastFailure;
     private final Object projectionLock = new Object();
     /** Set once we are deliberately tearing down, so onStop is not reported as a failure. */
@@ -124,11 +129,25 @@ public final class OverlayService extends Service {
     }
 
     public static void start(Context context, int resultCode, Intent data, boolean appOnly) {
+        start(context, resultCode, data, appOnly, null, null);
+    }
+
+    /**
+     * Starts the overlay and lets the service launch {@code targetPackage} once capture is
+     * live. Launching the game before the capture surface exists raced the target's first
+     * paint and left the overlay showing nothing.
+     */
+    public static void start(Context context, int resultCode, Intent data, boolean appOnly,
+                             String targetPackage, String targetActivity) {
         Intent i = new Intent(context, OverlayService.class)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
                 .putExtra(EXTRA_RESULT_DATA, data)
                 .putExtra(EXTRA_APP_ONLY, appOnly);
+        if (targetPackage != null) {
+            i.putExtra(EXTRA_TARGET_PACKAGE, targetPackage)
+                    .putExtra(EXTRA_TARGET_ACTIVITY, targetActivity);
+        }
         if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i);
         else context.startService(i);
     }
@@ -186,19 +205,57 @@ public final class OverlayService extends Service {
             resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0);
             resultData = intent.getParcelableExtra(EXTRA_RESULT_DATA);
             appOnlyCapture = intent.getBooleanExtra(EXTRA_APP_ONLY, false);
+            targetPackage = intent.getStringExtra(EXTRA_TARGET_PACKAGE);
+            targetActivity = intent.getStringExtra(EXTRA_TARGET_ACTIVITY);
         }
         if (resultData == null) {
-            toast("No screen-capture permission");
+            reportFailure("No screen-capture permission");
             stopSelf();
             return START_NOT_STICKY;
         }
 
         settings = AppSettings.load(this);
+        // Capture FIRST, overlay second. A MediaProjection token that does not create its
+        // VirtualDisplay almost immediately is revoked by the system on several OEM ROMs
+        // (confirmed behaviour on Snapdragon handhelds), which killed the whole session
+        // right after the cast indicator appeared. The window and the Vulkan renderer are
+        // set up afterwards, while frames are already arriving.
+        startProjection();
         showOverlay();
-        if (surfaceReady) {
-            startProjection();
+        if (targetPackage != null) {
+            main.postDelayed(this::launchTarget, 2000);
         }
         return START_NOT_STICKY;
+    }
+
+    /** Launches the game once capture is live, then keeps the overlay on top of it. */
+    private void launchTarget() {
+        if (targetLaunched || targetPackage == null || targetActivity == null) return;
+        targetLaunched = true;
+        try {
+            Intent i = new Intent(Intent.ACTION_MAIN)
+                    .addCategory(Intent.CATEGORY_LAUNCHER)
+                    .setComponent(new ComponentName(targetPackage, targetActivity))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                            | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            startActivity(i);
+            Log.i(TAG, "launched " + targetPackage + "/" + targetActivity);
+            main.postDelayed(this::bringToFront, 150);
+            main.postDelayed(this::bringToFront, 600);
+            main.postDelayed(this::bringToFront, 1500);
+        } catch (Throwable t) {
+            Log.w(TAG, "target launch failed", t);
+        }
+    }
+
+    /** Re-asserts the overlay above the freshly launched game's window. */
+    private void bringToFront() {
+        if (overlayView == null || overlayParams == null) return;
+        try {
+            if (overlayView.isAttachedToWindow()) {
+                windowManager.updateViewLayout(overlayView, overlayParams);
+            }
+        } catch (Throwable ignored) {}
     }
 
     private void startForegroundCompat() {
@@ -263,6 +320,8 @@ public final class OverlayService extends Service {
                     reattachAttempts = 0;
                     st.setDefaultBufferSize(screenWidth(), screenHeight());
                     openOutputSurface(st, width, height);
+                    installSkipScreenshot(overlayView);
+                    verifyExclusion();
                 } catch (Throwable t) {
                     // The overlay window can be re-created under us; keep the
                     // capture alive and try to get a surface back.
@@ -343,6 +402,19 @@ public final class OverlayService extends Service {
         if (Build.VERSION.SDK_INT >= 28) {
             overlayParams.layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+        }
+        // PRIVATE_FLAG_EXCLUDE_FROM_SCREEN_CAPTURE (0x00080000, API 31+): WMS tells
+        // SurfaceFlinger to leave this window out of VirtualDisplay/screenshot
+        // composition when the window is created, so there is no SurfaceControl
+        // timing race with the later setSkipScreenshot transaction.
+        try {
+            java.lang.reflect.Field f = WindowManager.LayoutParams.class
+                    .getDeclaredField("privateFlags");
+            f.setAccessible(true);
+            f.setInt(overlayParams, f.getInt(overlayParams) | 0x00080000);
+            Log.i(TAG, "window marked exclude-from-screen-capture");
+        } catch (Throwable t) {
+            Log.w(TAG, "privateFlags exclude-from-capture unavailable", t);
         }
         overlayParams.systemUiVisibility = View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                 | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
@@ -452,33 +524,20 @@ public final class OverlayService extends Service {
     }
 
     private void startProjectionLocked() {
-        if (projection != null || resultData == null || !surfaceReady
-                || surfaceWidth <= 0 || surfaceHeight <= 0) {
-            return;
-        }
-        synchronized (rendererLock) {
-            if (renderer == null) return;
-        }
-        Log.i(TAG, "starting projection: sdk=" + Build.VERSION.SDK_INT
-                + " targetSdk=" + getApplicationInfo().targetSdkVersion
-                + " exclusion=" + captureExclusionReady
-                + " appOnly=" + appOnlyCapture);
-        if (!captureExclusionReady && !appOnlyCapture) {
-            installSkipScreenshot(overlayView);
-            if (exclusionRetries++ < 8) {
-                Log.w(TAG, "capture exclusion not ready; retry " + exclusionRetries);
-                captureHandler.postDelayed(this::startProjection, 250);
-                return;
-            }
-            Log.e(TAG, "capture exclusion unavailable; refusing to mirror own overlay");
-            reportFailure("Capture exclusion failed on this device");
+        if (projection != null || resultData == null) return;
+        int width = screenWidth();
+        int height = screenHeight();
+        if (width <= 0 || height <= 0) {
+            reportFailure("Could not read the display size");
             stopSelf();
             return;
         }
-        exclusionRetries = 0;
-        if (!captureExclusionReady) {
-            Log.w(TAG, "skipScreenshot unavailable; relying on app-only MediaProjection capture");
-        }
+        Log.i(TAG, "starting projection: sdk=" + Build.VERSION.SDK_INT
+                + " targetSdk=" + getApplicationInfo().targetSdkVersion
+                + " size=" + width + "x" + height
+                + " appOnly=" + appOnlyCapture);
+        surfaceWidth = width;
+        surfaceHeight = height;
         try {
             MediaProjectionManager mpm =
                     (MediaProjectionManager) getSystemService(MEDIA_PROJECTION_SERVICE);
@@ -509,7 +568,7 @@ public final class OverlayService extends Service {
                 }
             }, captureHandler);
 
-            createReader(surfaceWidth, surfaceHeight);
+            createReader(width, height);
             startVirtualDisplay();
         } catch (Throwable t) {
             Log.e(TAG, "projection start failed", t);
@@ -518,33 +577,51 @@ public final class OverlayService extends Service {
         }
     }
 
-    /** Creates the capture display, retrying while the projection settles. */
+    /** Creates the one capture display this token is allowed. */
     private void startVirtualDisplay() {
         if (projection == null || reader == null) return;
         try {
             int density = getResources().getDisplayMetrics().densityDpi;
-            // flags=0 is the screen-capture default. AUTO_MIRROR creates a
-            // secondary logical display and, on some OEM compositors, feeds the
-            // overlay back into capture instead of the target app.
+            // flags=0 is what scrcpy and screen-share apps use: MediaProjection already
+            // mirrors the physical display. AUTO_MIRROR/PRESENTATION create a second
+            // logical display and make some OEM compositors capture the overlay itself.
             virtualDisplay = projection.createVirtualDisplay(
-                    "winfg-overlay", surfaceWidth, surfaceHeight, density, 0,
+                    "winfg-overlay", captureWidth, captureHeight, density, 0,
                     reader.getSurface(), null, captureHandler);
         } catch (Throwable t) {
             Log.e(TAG, "createVirtualDisplay failed", t);
             virtualDisplay = null;
         }
-        if (virtualDisplay != null) {
-            Log.i(TAG, "projection started " + surfaceWidth + "x" + surfaceHeight
-                    + " appOnly=" + appOnlyCapture);
-            updateNotification("Screen capture + frame generation · tap STOP to end");
+        if (virtualDisplay == null) {
+            reportFailure("Could not create the capture display");
+            stopSelf();
             return;
         }
-        if (displayAttempts++ < 3) {
-            Log.w(TAG, "capture display not ready; retry " + displayAttempts);
-            captureHandler.postDelayed(this::startVirtualDisplay, 400);
+        Log.i(TAG, "projection started " + captureWidth + "x" + captureHeight
+                + " appOnly=" + appOnlyCapture);
+        updateNotification("Screen capture + frame generation · tap STOP to end");
+    }
+
+    /**
+     * Confirms the overlay is excluded from its own capture once the window exists. The
+     * capture is already running at this point, so a device that blocks exclusion has to
+     * be told about rather than silently recording the overlay.
+     */
+    private void verifyExclusion() {
+        if (appOnlyCapture || captureExclusionReady) {
+            exclusionRetries = 0;
             return;
         }
-        reportFailure("Could not create the capture display");
+        if (exclusionRetries++ < 8) {
+            main.postDelayed(() -> {
+                if (!running) return;
+                installSkipScreenshot(overlayView);
+                verifyExclusion();
+            }, 250);
+            return;
+        }
+        Log.e(TAG, "capture exclusion unavailable; refusing to mirror own overlay");
+        reportFailure("Capture exclusion failed on this device");
         stopSelf();
     }
 
@@ -599,6 +676,9 @@ public final class OverlayService extends Service {
             if (capturedFrames == 0) {
                 Log.i(TAG, "first capture frame " + captureWidth + "x" + captureHeight
                         + " usage=0x" + Long.toHexString(usage));
+                // Capture is live: start the game now so it paints into a working
+                // pipeline instead of racing the capture start.
+                if (targetPackage != null) main.post(this::launchTarget);
             }
             synchronized (rendererLock) {
                 if (renderer != null) renderer.submit(buffer, image.getTimestamp());
@@ -751,6 +831,38 @@ public final class OverlayService extends Service {
                         }
                         c = c.getSuperclass();
                     }
+                }
+                if (sc == null) {
+                    // Android 12+ BLAST pipeline: ViewRootImpl keeps the window's
+                    // SurfaceControl inside a BLASTBufferQueue, which some OEM builds
+                    // leave intact after stripping the direct SurfaceControl fields.
+                    try {
+                        Class<?> bbqCls = Class.forName("android.graphics.BLASTBufferQueue");
+                        Class<?> c = vri.getClass();
+                        while (c != null && sc == null) {
+                            for (Field f : c.getDeclaredFields()) {
+                                if (!bbqCls.isAssignableFrom(f.getType())) continue;
+                                try {
+                                    f.setAccessible(true);
+                                    Object bbq = f.get(vri);
+                                    if (bbq == null) continue;
+                                    for (String name : new String[]{
+                                            "getSyncedSurfaceControl", "getSurfaceControl"}) {
+                                        Method m = findMethod(bbq.getClass(), name);
+                                        if (m == null) continue;
+                                        m.setAccessible(true);
+                                        sc = (SurfaceControl) m.invoke(bbq);
+                                        if (sc != null) {
+                                            Log.i(TAG, "SurfaceControl via BLASTBufferQueue." + name);
+                                            break;
+                                        }
+                                    }
+                                } catch (Throwable ignored) {}
+                                if (sc != null) break;
+                            }
+                            c = c.getSuperclass();
+                        }
+                    } catch (Throwable ignored) {}
                 }
                 if (sc == null) throw new IllegalStateException("no SurfaceControl");
                 SurfaceControl.Transaction txn = new SurfaceControl.Transaction();
