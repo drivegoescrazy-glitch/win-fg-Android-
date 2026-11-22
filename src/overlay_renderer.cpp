@@ -1271,7 +1271,13 @@ Java_com_winfg_launcher_OverlayRenderer_nativeCreate(
     // path is untouched and still honours the full profile.
     cfg.perfPreset = 2;                 // flow solved at 1/8 resolution
     if (cfg.frIters > 2) cfg.frIters = 2;
-    if (cfg.gmMode == 0) cfg.gmMode = 2;   // C1 prewarp off: another full-res pass saved
+    // C1 global-motion prewarp stays ON. It was disabled here to buy frame budget,
+    // but GameSir's own write-up of GSFG 1.1 names fast camera turns and large
+    // character motion as the hardest cases — and camera motion is exactly what C1
+    // removes before the dense search runs. Without it the solver spends its whole
+    // pyramid on a global pan and returns nothing usable for the objects, which is
+    // the ghosting that reads as "still 30".
+    if (cfg.gmMode == 2) cfg.gmMode = 0;   // 0 = auto (engage when the affine is stable)
     cfg.model = 4;
     cfg.synthMode = 1;
     cfg.sanitize();
