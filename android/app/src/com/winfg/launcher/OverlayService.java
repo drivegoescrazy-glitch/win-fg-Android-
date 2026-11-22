@@ -92,6 +92,10 @@ public final class OverlayService extends Service {
     private int surfaceHeight;
     private int captureWidth;
     private int captureHeight;
+    /** Usage bits the capture buffers must carry to be importable by Vulkan. */
+    private static final long GPU_BUFFER_USAGE =
+            HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE | HardwareBuffer.USAGE_GPU_COLOR_OUTPUT;
+    private long skippedFrames;
     private volatile boolean captureExclusionReady;
     private static volatile boolean hiddenApiExempted;
     private int exclusionRetries;
@@ -125,6 +129,7 @@ public final class OverlayService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        CrashLog.install(getApplicationContext());
         running = true;
         settings = AppSettings.load(this);
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
@@ -136,6 +141,18 @@ public final class OverlayService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        try {
+            return handleStartCommand(intent);
+        } catch (Throwable t) {
+            // Nothing in the overlay pipeline may take the app down with it.
+            Log.e(TAG, "overlay start failed", t);
+            toast("Overlay failed to start: " + t);
+            stopSelf();
+            return START_NOT_STICKY;
+        }
+    }
+
+    private int handleStartCommand(Intent intent) {
         startForegroundCompat();
 
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
@@ -176,9 +193,18 @@ public final class OverlayService extends Service {
     private void startForegroundCompat() {
         Notification n = notification();
         if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
-        } else {
+            try {
+                startForeground(NOTIFICATION_ID, n,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION);
+                return;
+            } catch (Throwable t) {
+                Log.w(TAG, "mediaProjection foreground type rejected; retrying plain", t);
+            }
+        }
+        try {
             startForeground(NOTIFICATION_ID, n);
+        } catch (Throwable t) {
+            Log.e(TAG, "startForeground failed", t);
         }
     }
 
@@ -218,39 +244,51 @@ public final class OverlayService extends Service {
         textureView.setKeepScreenOn(true);
         textureView.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override public void onSurfaceTextureAvailable(SurfaceTexture st, int width, int height) {
-                st.setDefaultBufferSize(screenWidth(), screenHeight());
-                openOutputSurface(st, width, height);
+                try {
+                    st.setDefaultBufferSize(screenWidth(), screenHeight());
+                    openOutputSurface(st, width, height);
+                } catch (Throwable t) {
+                    fail("Overlay surface failed: " + t, t);
+                }
             }
 
             @Override public void onSurfaceTextureSizeChanged(SurfaceTexture st, int width, int height) {
-                st.setDefaultBufferSize(screenWidth(), screenHeight());
-                if (projection == null) {
-                    surfaceWidth = width;
-                    surfaceHeight = height;
-                    ensureRenderer(width, height);
-                    // Recreating the reader after MediaProjection has started
-                    // closes the live consumer during SurfaceFlinger's dequeue.
-                    resizeCapture(width, height);
+                try {
+                    st.setDefaultBufferSize(screenWidth(), screenHeight());
+                    if (projection == null) {
+                        surfaceWidth = width;
+                        surfaceHeight = height;
+                        ensureRenderer(width, height);
+                        // Recreating the reader after MediaProjection has started
+                        // closes the live consumer during SurfaceFlinger's dequeue.
+                        resizeCapture(width, height);
+                    }
+                    installSkipScreenshot(overlayView);
+                } catch (Throwable t) {
+                    fail("Overlay resize failed: " + t, t);
                 }
-                installSkipScreenshot(overlayView);
             }
 
             @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
-                surfaceReady = false;
-                stopFrameLoop();
-                // Tear down the projection before the renderer that consumes it;
-                // otherwise SurfaceFlinger keeps a producer aimed at a released
-                // ImageReader surface.
-                stopCapture();
-                synchronized (rendererLock) {
-                    if (renderer != null) {
-                        renderer.stop();
-                        renderer = null;
+                try {
+                    surfaceReady = false;
+                    stopFrameLoop();
+                    // Tear down the projection before the renderer that consumes it;
+                    // otherwise SurfaceFlinger keeps a producer aimed at a released
+                    // ImageReader surface.
+                    stopCapture();
+                    synchronized (rendererLock) {
+                        if (renderer != null) {
+                            renderer.stop();
+                            renderer = null;
+                        }
                     }
-                }
-                if (outputSurface != null) {
-                    try { outputSurface.release(); } catch (Throwable ignored) {}
-                    outputSurface = null;
+                    if (outputSurface != null) {
+                        try { outputSurface.release(); } catch (Throwable ignored) {}
+                        outputSurface = null;
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "overlay teardown failed", t);
                 }
                 return true;
             }
@@ -340,8 +378,25 @@ public final class OverlayService extends Service {
                 renderer = null;
             }
             AppSettings s = AppSettings.load(this);
-            OverlayRenderer r = new OverlayRenderer();
-            if (!r.start(outputSurface, width, height, s)) {
+            OverlayRenderer r;
+            try {
+                r = new OverlayRenderer();
+            } catch (Throwable t) {
+                // A missing/mismatched libwinfg_overlay.so used to throw out of
+                // the SurfaceTexture callback and kill the process.
+                Log.e(TAG, "overlay renderer library unavailable", t);
+                toast("Frame generation library could not be loaded");
+                stopSelf();
+                return;
+            }
+            boolean started;
+            try {
+                started = r.start(outputSurface, width, height, s);
+            } catch (Throwable t) {
+                Log.e(TAG, "renderer start threw", t);
+                started = false;
+            }
+            if (!started) {
                 Log.e(TAG, "renderer start failed");
                 toast("Vulkan overlay failed to start");
                 stopSelf();
@@ -439,7 +494,17 @@ public final class OverlayService extends Service {
 
     private void createReader(int width, int height) {
         ImageReader old = reader;
-        reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 4);
+        // Frame generation reads the captured image on the GPU. A plain
+        // ImageReader allocates CPU-usage buffers, and importing one of those
+        // into Vulkan is undefined behaviour (the driver may fault), so the
+        // reader must request GPU usage explicitly.
+        if (Build.VERSION.SDK_INT >= 29) {
+            reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 4,
+                    HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE
+                            | HardwareBuffer.USAGE_GPU_COLOR_OUTPUT);
+        } else {
+            reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 4);
+        }
         reader.setOnImageAvailableListener(this::onImageAvailable, captureHandler);
         captureWidth = width;
         captureHeight = height;
@@ -455,8 +520,21 @@ public final class OverlayService extends Service {
             if (image == null) return;
             HardwareBuffer buffer = image.getHardwareBuffer();
             if (buffer == null) return;
+            long usage = buffer.getUsage();
+            if ((usage & GPU_BUFFER_USAGE) == 0) {
+                // Never hand a CPU-only buffer to Vulkan: import of an AHB
+                // without AHARDWAREBUFFER_USAGE_GPU_* is undefined in the spec
+                // and crashes Adreno drivers.
+                if (skippedFrames++ == 0) {
+                    Log.e(TAG, "capture buffer is not GPU accessible (usage=0x"
+                            + Long.toHexString(usage) + "); frame generation needs "
+                            + "GPU_SAMPLED_IMAGE|GPU_COLOR_OUTPUT");
+                }
+                return;
+            }
             if (capturedFrames == 0) {
-                Log.i(TAG, "first capture frame " + captureWidth + "x" + captureHeight);
+                Log.i(TAG, "first capture frame " + captureWidth + "x" + captureHeight
+                        + " usage=0x" + Long.toHexString(usage));
             }
             synchronized (rendererLock) {
                 if (renderer != null) renderer.submit(buffer, image.getTimestamp());
@@ -645,6 +723,13 @@ public final class OverlayService extends Service {
 
     private void toast(String text) {
         main.post(() -> Toast.makeText(this, text, Toast.LENGTH_LONG).show());
+    }
+
+    /** Logs, tells the user, and takes only the overlay down. */
+    private void fail(String message, Throwable t) {
+        Log.e(TAG, message, t);
+        toast(message);
+        stopSelf();
     }
 
     @Override

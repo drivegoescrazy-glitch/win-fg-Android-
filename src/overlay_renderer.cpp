@@ -395,6 +395,13 @@ bool Renderer::createSwapchain() {
         LOGE("invalid swapchain extent");
         return false;
     }
+    const VkImageUsageFlags wantedUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                          VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if ((caps.supportedUsageFlags & wantedUsage) != wantedUsage) {
+        LOGE("surface does not support blit-to-swapchain (supported=0x%x)",
+             (unsigned)caps.supportedUsageFlags);
+        return false;
+    }
     uint32_t minImages = std::max(4u, caps.minImageCount);
     if (caps.maxImageCount != 0 && minImages > caps.maxImageCount) minImages = caps.maxImageCount;
 
@@ -525,6 +532,22 @@ bool Renderer::init(ANativeWindow* window, int width, int height, const winfg::C
 
 bool Renderer::importAhb(AHardwareBuffer* buffer, int width, int height, AhbImage& out) {
     if (!getAhbProps_ || width <= 0 || height <= 0) return false;
+
+    // VUID-vkGetAndroidHardwareBufferPropertiesANDROID-buffer-01884: the buffer
+    // must carry at least one AHARDWAREBUFFER_USAGE_GPU_* flag. A CPU-only
+    // buffer (a plain ImageReader without GPU usage) is undefined behaviour here
+    // and faults inside the Adreno driver, so check before touching Vulkan.
+    AHardwareBuffer_Desc usageDesc{};
+    AHardwareBuffer_describe(buffer, &usageDesc);
+    const uint64_t gpuUsage = AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE |
+                              AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT |
+                              AHARDWAREBUFFER_USAGE_GPU_FRAMEBUFFER |
+                              AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER;
+    if ((usageDesc.usage & gpuUsage) == 0) {
+        LOGW("AHB has no GPU usage (usage=0x%llx); refusing to import",
+             (unsigned long long)usageDesc.usage);
+        return false;
+    }
 
     VkAndroidHardwareBufferFormatPropertiesANDROID formatProps{
             VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_FORMAT_PROPERTIES_ANDROID};
@@ -667,12 +690,18 @@ void Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
         LOGW("acquire real failed: %d", (int)ar);
         return;
     }
+    if (realIndex >= swapImages_.size()) {
+        destroyAhb(ahb);
+        LOGW("acquire returned out-of-range image %u", realIndex);
+        return;
+    }
 
     uint32_t spareIndex = 0;
     bool haveSpare = false;
     VkResult sr = vkAcquireNextImageKHR(device_, swapchain_, 2000000ull,
                                         acquireSpare_, VK_NULL_HANDLE, &spareIndex);
-    if ((sr == VK_SUCCESS || sr == VK_SUBOPTIMAL_KHR) && spareIndex != realIndex) {
+    if ((sr == VK_SUCCESS || sr == VK_SUBOPTIMAL_KHR)
+            && spareIndex != realIndex && spareIndex < swapImages_.size()) {
         haveSpare = true;
     }
 

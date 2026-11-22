@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.winfg.launcher"
-    android:versionCode="4"
-    android:versionName="1.3"
+    android:versionCode="5"
+    android:versionName="1.4"
     android:installLocation="auto">
 
     <!-- targetSdk stays current. Android 12/13 has no single-app MediaProjection,
@@ -10,8 +10,8 @@
          flag; the non-SDK lookup is exempted at runtime (see OverlayService).
          Android 14+ uses the public single-app MediaProjection path. -->
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
-    <!-- versionCode 4: no-root MediaProjection overlay capture with
-         skip-screenshot exclusion and non-SDK API exemption. -->
+    <!-- versionCode 5: no-root MediaProjection overlay capture with
+         skip-screenshot exclusion and GPU-importable capture buffers. -->
 
     <!-- No-root overlay mode: draw over games and capture the display with the
          user's MediaProjection consent. No root or system layer is required. -->

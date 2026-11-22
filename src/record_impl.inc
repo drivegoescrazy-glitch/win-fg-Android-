@@ -328,6 +328,14 @@ void FrameGen::record(VkCommandBuffer cmd, VkImageView prevView, VkImageView cur
                       pyrA_, pyrB_, pyrAs_, flowLvl_, flowExpA_, flowExpB_,
                       pLuma_, pDown_, flowP, expandP, pSynth_, pGmReduce_, pGmPrewarp_,
                       pFlowReg_, flowRegA_, flowRegB_, gmSsbo_, kLevels, cfg_);
+        // A host-side allocation failure leaves VK_NULL_HANDLE sets behind;
+        // dispatching against those faults inside the driver, so skip the frame
+        // instead and let the caller keep presenting the captured image.
+        if (!g_scratch.built || g_scratch.sSynth == VK_NULL_HANDLE
+                || g_scratch.sLumaCurr == VK_NULL_HANDLE) {
+            WFG_LOGE("framegen scratch descriptor sets unavailable; skipping interpolation");
+            return;
+        }
     }
 
     // ── C1: solve the global-motion affine (reads the SSBO the caller fence-waited) ──
