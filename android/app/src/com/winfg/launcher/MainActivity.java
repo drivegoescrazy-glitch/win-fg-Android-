@@ -99,7 +99,12 @@ public final class MainActivity extends Activity {
         ((TextView) f(R.id.header_version)).setText("v" + AppInfo.VERSION_NAME);
 
         tabGames.setOnClickListener(v -> showTab(0));
-        tabSettings.setOnClickListener(v -> showTab(1));
+        // The settings page is gone: the renderer's defaults are the configuration
+        // (model 4, reproject synthesis, GUI exclusion, balanced preset), so there is
+        // nothing left on that screen worth asking a user to get wrong. Everything it
+        // used to bind is still constructed, just never shown.
+        tabSettings.setOnClickListener(v -> showTab(0));
+        tabSettings.setVisibility(View.GONE);
         tabEngine.setOnClickListener(v -> showTab(2));
 
         setupGames();

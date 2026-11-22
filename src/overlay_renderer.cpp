@@ -533,8 +533,16 @@ bool Renderer::createSwapchain() {
              (unsigned)caps.supportedUsageFlags);
         return false;
     }
-    uint32_t minImages = std::max(4u, caps.minImageCount);
+    // Allocate the spare up front. Frame insertion needs a swapchain image that the
+    // compositor is not currently holding; asking for the surface minimum leaves the
+    // pool exactly consumed by the display queue, so AcquireNextImageKHR for the
+    // generated present can only ever fail and the overlay silently degrades to one
+    // present per capture (30 -> 30). Two images above the minimum, never fewer than
+    // four, and clamped to what the surface will actually grant.
+    uint32_t minImages = caps.minImageCount + 2u;
+    if (minImages < 4u) minImages = 4u;
     if (caps.maxImageCount != 0 && minImages > caps.maxImageCount) minImages = caps.maxImageCount;
+    if (minImages < 2u) minImages = 2u;
 
     VkCompositeAlphaFlagBitsKHR alpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     if (!(caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR)) {
@@ -893,7 +901,11 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     const bool fgOff      = !fgReady_;
     const bool firstFrame = !prevValid_;
     const bool noSpareImg = swapImages_.size() < 3;
-    const bool noInterval = deltaNs < (vsyncNs * 18) / 10;
+    // A 30 fps source on a 60 Hz panel must never be refused. The old gate demanded
+    // 1.8 x vsync (30 ms), so ordinary 30 fps jitter (a 28 ms delta) read as "already
+    // at panel rate" and the insert was skipped. 1.25 x vsync still refuses a source
+    // that genuinely runs at the panel rate while accepting every 2x-rate source.
+    const bool noInterval = deltaNs < (vsyncNs * 5) / 4;
     const bool canInsert  = !fgOff && !firstFrame && !noSpareImg && !noInterval;
     if (fgOff)           ++stFgOff_;
     else if (firstFrame) ++stFirst_;
@@ -901,7 +913,7 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     else if (noInterval) ++stNoInterval_;
     stDeltaMs_  = static_cast<int32_t>(deltaNs / 1000000ull);
     stVsyncMs_  = static_cast<int32_t>(vsyncNs / 1000000ull);
-    if (deltaNs < (vsyncNs * 18) / 10 && stDeltaMs_ > 0) stDeltaMs_ = -stDeltaMs_;
+    if (noInterval && stDeltaMs_ > 0) stDeltaMs_ = -stDeltaMs_;
 
     uint32_t spareIndex = 0;
     bool haveSpare = false;
