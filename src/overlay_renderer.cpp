@@ -525,6 +525,15 @@ bool Renderer::createDevice() {
 bool Renderer::createZeroFg() {
     zfg_.reset();
     zfgReady_ = false;
+    // Opt-in only. Issue #2: a ZeroFG creation on an Adreno 740 faulted inside
+    // libllvm-qgl.so (signal 11, stage "ZeroFG init") after a session that had
+    // generated correctly, so this is a driver fault we cannot catch or undo.
+    // The built-in engine is the default generator until that is understood.
+    if (cfg_.zerofgMode == 2) {
+        LOGI("ZeroFG off by default (zerofg=off) — built-in engine generating; "
+             "opt in with conf.toml 'zerofg = on' or WIN_FG_ZEROFG=on");
+        return false;
+    }
     if (!frameGen_ || !api13_) {
         LOGI("ZeroFG not created (frameGen=%d api13=%d) — built-in engine only",
              (int)frameGen_, (int)api13_);

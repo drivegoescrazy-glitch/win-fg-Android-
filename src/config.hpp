@@ -96,6 +96,13 @@ struct Config {
     // pipeline differs, so this is a live A/B switch.
     // WIN_FG_SYNTH=interpolate|reproject  /  conf.toml synth=interpolate|reproject.
     int      synthMode   = 0;
+    // ZeroFG BACKEND. 0 = auto (on where the device qualifies), 1 = on,
+    // 2 = off. Default is OFF because creating it crashed an Adreno 740 inside
+    // libllvm-qgl.so (GitHub issue #2: signal 11, stage "ZeroFG init") even
+    // though the session before it generated 1.99x correctly. A driver that
+    // faults cannot be caught in-process, so it is opt-in until the fault is
+    // understood: conf.toml `zerofg = on`  /  WIN_FG_ZEROFG=on.
+    int      zerofgMode  = 2;
     int      frIters     = 4;      // TV-L1 iterations at kFlowFinest (0 ⇒ off)
     float    frLambda    = 2.0f;   // L1 data-fidelity weight (higher ⇒ trust SAD flow)
     float    frDt        = 0.25f;  // semi-implicit smoothing step (higher ⇒ smoother)
@@ -165,6 +172,7 @@ struct Config {
         if (gmMode < 0) gmMode = 0; if (gmMode > 2) gmMode = 2;
         if (frMode < 0) frMode = 0; if (frMode > 2) frMode = 2;
         if (synthMode < 0) synthMode = 0; if (synthMode > 1) synthMode = 1;
+        if (zerofgMode < 0) zerofgMode = 0; if (zerofgMode > 2) zerofgMode = 2;
         if (frIters < 0) frIters = 0; if (frIters > 16) frIters = 16;
         if (frLambda < 0.0f) frLambda = 0.0f;
         if (frDt < 0.01f) frDt = 0.01f; if (frDt > 4.0f) frDt = 4.0f;
@@ -266,6 +274,7 @@ static inline void apply_toml(Config& c, const std::string& path) {
         else if (k == "global_motion") c.gmMode = parse_tristate(v, c.gmMode);
         else if (k == "flow_reg")   c.frMode = parse_tristate(v, c.frMode);
         else if (k == "synth")      c.synthMode = (v == "reproject") ? 1 : 0;
+        else if (k == "zerofg")     c.zerofgMode = parse_tristate(v, c.zerofgMode);
         else if (k == "fr_iters")   c.frIters = std::atoi(v.c_str());
         else if (k == "fr_lambda")  c.frLambda = std::strtof(v.c_str(), nullptr);
         else if (k == "fr_dt")      c.frDt = std::strtof(v.c_str(), nullptr);
@@ -342,6 +351,7 @@ static inline Config load_config() {
     c.perfPreset  = envi("WIN_FG_PERF_PRESET", c.perfPreset);
     if (const char* g = std::getenv("WIN_FG_GM")) c.gmMode = parse_tristate(g, c.gmMode);
     if (const char* r = std::getenv("WIN_FG_FLOWREG")) c.frMode = parse_tristate(r, c.frMode);
+    if (const char* z = std::getenv("WIN_FG_ZEROFG")) c.zerofgMode = parse_tristate(z, c.zerofgMode);
     if (const char* s = std::getenv("WIN_FG_SYNTH"))
         c.synthMode = (std::string(s) == "reproject") ? 1 : 0;
     c.frIters    = envi("WIN_FG_FR_ITERS", c.frIters);
