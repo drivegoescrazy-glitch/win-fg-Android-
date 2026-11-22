@@ -55,6 +55,24 @@ public final class OverlayRenderer {
         }
     }
 
+    /**
+     * Why generated frames are (or are not) being inserted, straight from the engine:
+     * {generated, refusedFgOff, refusedFirstFrame, refusedNoSpareImage,
+     *  refusedNoInterval, refusedSpareAcquire, passthrough, lastDeltaMs, lastVsyncMs}.
+     * lastDeltaMs is negative when the interval was below the insert threshold.
+     */
+    public int[] stats() {
+        long h = handle;
+        if (!LOADED || h == 0) return null;
+        int[] out = new int[9];
+        try {
+            nativeStats(h, out);
+            return out;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     public void stop() {
         long h = handle;
         handle = 0;
@@ -75,6 +93,8 @@ public final class OverlayRenderer {
                                             boolean pacing, int synthMode);
 
     private static native int nativeSubmit(long handle, HardwareBuffer buffer, long timestampNs);
+
+    private static native void nativeStats(long handle, int[] out);
 
     private static native void nativeDestroy(long handle);
 }

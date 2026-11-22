@@ -791,8 +791,34 @@ public final class OverlayService extends Service {
             } else {
                 status = "no new frames for " + (sinceCapture / 1000) + " s";
             }
+            String why = insertReason();
+            if (why != null) status = status + " · " + why;
             updateNotification("Screen capture + frame generation · " + status);
+            note("fps " + status);
         }
+    }
+
+    /**
+     * Names the exact reason the engine is not inserting generated frames, so a
+     * 30 -> 30 session is diagnosable on the device. Null when generation is working
+     * or when there is nothing to say yet.
+     */
+    private String insertReason() {
+        int[] st = null;
+        synchronized (rendererLock) {
+            if (renderer != null) st = renderer.stats();
+        }
+        if (st == null) {
+            return settings != null && settings.mirrorOnly ? "frame generation off (mirror only)" : null;
+        }
+        if (st[0] > 0) return null;                        // something was generated
+        if (st[1] > 0) return "frame generation off";      // fgReady_ false
+        if (st[2] > 0 && st[3] == 0 && st[4] == 0) return "waiting for a second frame";
+        if (st[3] > 0) return "no spare swapchain image";
+        if (st[4] > 0) return "interval " + Math.abs(st[7]) + " ms < "
+                + (st[8] * 18 / 10) + " ms (source already at panel rate)";
+        if (st[5] > 0) return "spare image acquire failed";
+        return null;
     }
 
     /** Rebuilds the Vulkan renderer against the surface that is already in the window. */

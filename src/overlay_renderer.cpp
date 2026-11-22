@@ -163,6 +163,14 @@ public:
               bool frameGen, const winfg::Config& cfg);
     bool submit(AHardwareBuffer* buffer, uint64_t timestampNs);
     bool dead() const { return dead_; }
+
+    /** 9 ints: generated, fgOff, first, noSpare, noInterval, spareFail, passthrough,
+     *  lastDeltaMs (negative = below the insert threshold), lastVsyncMs. */
+    void readStats(int32_t* out, int n) const {
+        const int32_t v[9] = { stGenerated_, stFgOff_, stFirst_, stNoSpare_, stNoInterval_,
+                               stSpareFail_, stPass_, stDeltaMs_, stVsyncMs_ };
+        for (int i = 0; i < 9 && i < n; ++i) out[i] = v[i];
+    }
     void destroy();
 
 private:
@@ -214,6 +222,10 @@ private:
     // producers repeat or reset them). Without this fallback the insert decision
     // below can never pass and the overlay keeps showing the game's own rate.
     uint64_t lastHostNs_ = 0;
+    // Insert-decision telemetry, exposed to the service through nativeStats().
+    int32_t stGenerated_ = 0, stFgOff_ = 0, stFirst_ = 0, stNoSpare_ = 0,
+            stNoInterval_ = 0, stSpareFail_ = 0, stPass_ = 0;
+    int32_t stDeltaMs_ = 0, stVsyncMs_ = 0;
     uint64_t presented_ = 0;
 
     VkSwapchainKHR swapchain_ = VK_NULL_HANDLE;
@@ -875,8 +887,21 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
         if (deltaNs == 0 || deltaNs > 500000000ull) deltaNs = hostDelta;
     }
     const uint64_t vsyncNs = static_cast<uint64_t>(1e9 / refreshHz_);
-    const bool canInsert = fgReady_ && prevValid_ && swapImages_.size() >= 3 &&
-            deltaNs >= (vsyncNs * 18) / 10;
+    // Every refusal is counted so the UI can name it instead of guessing. A 30 -> 30
+    // session is only diagnosable from the device if the app can say WHICH condition
+    // blocked the insert.
+    const bool fgOff      = !fgReady_;
+    const bool firstFrame = !prevValid_;
+    const bool noSpareImg = swapImages_.size() < 3;
+    const bool noInterval = deltaNs < (vsyncNs * 18) / 10;
+    const bool canInsert  = !fgOff && !firstFrame && !noSpareImg && !noInterval;
+    if (fgOff)           ++stFgOff_;
+    else if (firstFrame) ++stFirst_;
+    else if (noSpareImg) ++stNoSpare_;
+    else if (noInterval) ++stNoInterval_;
+    stDeltaMs_  = static_cast<int32_t>(deltaNs / 1000000ull);
+    stVsyncMs_  = static_cast<int32_t>(vsyncNs / 1000000ull);
+    if (deltaNs < (vsyncNs * 18) / 10 && stDeltaMs_ > 0) stDeltaMs_ = -stDeltaMs_;
 
     uint32_t spareIndex = 0;
     bool haveSpare = false;
@@ -891,6 +916,7 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
         }
         const bool acquired = sr == VK_SUCCESS || sr == VK_SUBOPTIMAL_KHR;
         haveSpare = acquired && spareIndex != realIndex && spareIndex < swapImages_.size();
+        if (!haveSpare) ++stSpareFail_;
         if (acquired && !haveSpare && spareIndex < swapImages_.size()) {
             // Hand an unusable acquired image straight back: an image left acquired
             // starves the swapchain, and its signalled acquire semaphore must be
@@ -1058,6 +1084,7 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
     prevValid_ = true;
     stage("idle");
     ++presented_;
+    if (haveSpare) ++stGenerated_; else ++stPass_;
     if ((presented_ & 0x3f) == 0) {
         LOGI("frame %llu %dx%d%s", (unsigned long long)timestampNs, w, h,
              haveSpare ? " 2x" : " passthrough");
@@ -1180,6 +1207,16 @@ Java_com_winfg_launcher_OverlayRenderer_nativeSubmit(
     const bool presented = renderer->submit(ahb, static_cast<uint64_t>(timestampNs));
     if (!presented && renderer->dead()) return -1;
     return presented ? 1 : 0;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_winfg_launcher_OverlayRenderer_nativeStats(
+        JNIEnv* env, jclass, jlong handle, jintArray out) {
+    if (handle == 0 || out == nullptr) return;
+    Renderer* renderer = reinterpret_cast<Renderer*>(handle);
+    int32_t v[9] = {0};
+    renderer->readStats(v, 9);
+    env->SetIntArrayRegion(out, 0, 9, reinterpret_cast<const jint*>(v));
 }
 
 extern "C" JNIEXPORT void JNICALL
