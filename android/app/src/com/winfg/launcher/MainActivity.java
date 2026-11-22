@@ -133,22 +133,25 @@ public final class MainActivity extends Activity {
             maybePromptCrashReports();
             return;
         }
-        // The renderer died inside the GPU driver or the native pipeline. Run the next
-        // session as a capture-only mirror so the overlay still works, and let the user
-        // opt back into frame generation once the cause is understood.
-        settings.mirrorOnly = true;
-        settings.save(this);
+        // The renderer died inside the GPU driver or the native pipeline. Offer the
+        // capture-only fallback, but never switch to it silently: that turned one old
+        // crash into sessions that kept running at the game's own rate forever, with
+        // nothing on screen explaining why frame generation had stopped.
         new AlertDialog.Builder(this)
                 .setTitle("Win-FG renderer crashed")
-                .setMessage(report + "\n\nThe overlay will start in mirror-only mode (capture,"
-                        + " no generated frames). Choose Retry to try frame generation again."
+                .setMessage(report + "\n\nChoose Mirror only to keep capture without generated"
+                        + " frames, or Retry to start generating again."
                         + "\n\nThis report is saved in Engine → CRASH REPORTS.")
                 .setPositiveButton("Retry frame generation", (d, w) -> {
                     settings.mirrorOnly = false;
                     settings.save(this);
                     updateOverlayUi();
                 })
-                .setNegativeButton("Mirror only", null)
+                .setNegativeButton("Mirror only", (d, w) -> {
+                    settings.mirrorOnly = true;
+                    settings.save(this);
+                    updateOverlayUi();
+                })
                 .setNeutralButton("Report on GitHub", (d, w) -> {
                     CrashReports.Report r = CrashReports.latest(this);
                     if (r != null) sendReport(r);

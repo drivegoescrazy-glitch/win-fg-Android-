@@ -87,6 +87,22 @@ void main() {
     float denom   = length(F01) + length(F10) + 1.5 * invDim.x;
     float consist = conf * exp(-lambda * length(fbResid) / denom);
 
+    // ── GUI / HUD exclusion ──────────────────────────────────────────────────
+    // Screen-space UI is static between two consecutive real frames while the
+    // world moves underneath it, so warping it is always wrong: it smears, it
+    // feathers at the edges and text shimmers. Pixels that are (almost) identical
+    // at the SAME screen position and carry little motion are therefore copied
+    // verbatim from the current frame. Menus, health bars, minimaps and subtitles
+    // are protected this way without knowing anything about the game's UI.
+    vec3  sameCurr = texture(uCurr, uv).rgb;
+    vec3  samePrev = texture(uPrev, uv).rgb;
+    float staticDiff = abs(luma(sameCurr) - luma(samePrev));
+    float motionPx   = max(length(F01), length(F10)) / max(invDim.x, 1e-6);
+    if (staticDiff < 0.02 && motionPx < 1.0) {
+        imageStore(uOut, gid, vec4(sameCurr, 1.0));
+        return;
+    }
+
     // The two warped hypotheses.
     vec2 pA = uv - alpha        * F01;
     vec2 pB = uv - (1.0 - alpha) * F10;
