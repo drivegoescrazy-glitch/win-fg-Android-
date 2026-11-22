@@ -88,6 +88,14 @@ struct Config {
     // pre-C2. See shaders/of3_flowreg.comp.
     // WIN_FG_FLOWREG=auto|on|off  /  conf.toml flow_reg=auto|on|off.
     int      frMode      = 0;      // 0 auto (engaged), 1 on (engaged), 2 off
+    // SYNTHESIS BACK END. 0 = wfg_synth (softmax importance blend of both warped
+    // frames; the long-standing behaviour). 1 = wfg_reproject (occlusion-adaptive
+    // reprojection: per pixel choose between the blend and a single-frame
+    // reprojection of the temporally nearer frame, so a disocclusion or a wrong
+    // vector cannot double an edge). Same descriptor set, same inputs — only the
+    // pipeline differs, so this is a live A/B switch.
+    // WIN_FG_SYNTH=interpolate|reproject  /  conf.toml synth=interpolate|reproject.
+    int      synthMode   = 0;
     int      frIters     = 4;      // TV-L1 iterations at kFlowFinest (0 ⇒ off)
     float    frLambda    = 2.0f;   // L1 data-fidelity weight (higher ⇒ trust SAD flow)
     float    frDt        = 0.25f;  // semi-implicit smoothing step (higher ⇒ smoother)
@@ -156,6 +164,7 @@ struct Config {
         if (perfPreset < 0 || perfPreset > 2) perfPreset = 1;   // clamp out-of-range -> Balanced
         if (gmMode < 0) gmMode = 0; if (gmMode > 2) gmMode = 2;
         if (frMode < 0) frMode = 0; if (frMode > 2) frMode = 2;
+        if (synthMode < 0) synthMode = 0; if (synthMode > 1) synthMode = 1;
         if (frIters < 0) frIters = 0; if (frIters > 16) frIters = 16;
         if (frLambda < 0.0f) frLambda = 0.0f;
         if (frDt < 0.01f) frDt = 0.01f; if (frDt > 4.0f) frDt = 4.0f;
@@ -256,6 +265,7 @@ static inline void apply_toml(Config& c, const std::string& path) {
         else if (k == "perf_preset") c.perfPreset = std::atoi(v.c_str());
         else if (k == "global_motion") c.gmMode = parse_tristate(v, c.gmMode);
         else if (k == "flow_reg")   c.frMode = parse_tristate(v, c.frMode);
+        else if (k == "synth")      c.synthMode = (v == "reproject") ? 1 : 0;
         else if (k == "fr_iters")   c.frIters = std::atoi(v.c_str());
         else if (k == "fr_lambda")  c.frLambda = std::strtof(v.c_str(), nullptr);
         else if (k == "fr_dt")      c.frDt = std::strtof(v.c_str(), nullptr);
@@ -332,6 +342,8 @@ static inline Config load_config() {
     c.perfPreset  = envi("WIN_FG_PERF_PRESET", c.perfPreset);
     if (const char* g = std::getenv("WIN_FG_GM")) c.gmMode = parse_tristate(g, c.gmMode);
     if (const char* r = std::getenv("WIN_FG_FLOWREG")) c.frMode = parse_tristate(r, c.frMode);
+    if (const char* s = std::getenv("WIN_FG_SYNTH"))
+        c.synthMode = (std::string(s) == "reproject") ? 1 : 0;
     c.frIters    = envi("WIN_FG_FR_ITERS", c.frIters);
     c.frLambda   = envf("WIN_FG_FR_LAMBDA", c.frLambda);
     c.frDt       = envf("WIN_FG_FR_DT", c.frDt);
@@ -386,6 +398,7 @@ static inline Config load_config() {
         c.flowScale    = prop_f("winfg.flow", c.flowScale);
         c.gmMode       = prop_i("winfg.gm", c.gmMode);
         c.frMode       = prop_i("winfg.reg", c.frMode);
+        c.synthMode    = prop_i("winfg.synth", c.synthMode);
         c.frIters      = prop_i("winfg.iters", c.frIters);
         c.frLambda     = prop_f("winfg.lambda", c.frLambda);
         c.frDt         = prop_f("winfg.dt", c.frDt);

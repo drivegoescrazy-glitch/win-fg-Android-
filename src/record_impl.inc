@@ -322,11 +322,14 @@ void FrameGen::record(VkCommandBuffer cmd, VkImageView prevView, VkImageView cur
     const bool m4 = (cfg_.model == 4);
     const Pipe& flowP   = m4 ? pFlowM4_   : pFlow_;
     const Pipe& expandP = m4 ? pExpandM4_ : pExpand_;
+    // Synthesis back end: 1 = occlusion-adaptive reprojection. Same layout, so the
+    // scratch descriptor set built against it is interchangeable.
+    const Pipe& synthP  = (cfg_.synthMode == 1) ? pReproject_ : pSynth_;
 
     if (!g_scratch.built || g_scratch.builtFor.width != extent_.width || g_scratch.builtFor.height != extent_.height) {
         ensureScratch(this, dd_, device_, memProps_, descPool_, linear_, extent_,
                       pyrA_, pyrB_, pyrAs_, flowLvl_, flowExpA_, flowExpB_,
-                      pLuma_, pDown_, flowP, expandP, pSynth_, pGmReduce_, pGmPrewarp_,
+                      pLuma_, pDown_, flowP, expandP, synthP, pGmReduce_, pGmPrewarp_,
                       pFlowReg_, flowRegA_, flowRegB_, gmSsbo_, kLevels, cfg_);
         // A host-side allocation failure leaves VK_NULL_HANDLE sets behind;
         // dispatching against those faults inside the driver, so skip the frame
@@ -513,7 +516,7 @@ void FrameGen::record(VkCommandBuffer cmd, VkImageView prevView, VkImageView cur
     disp(expandP, g_scratch.sExpand[gmSlot], levelExtent(extent_, 0));
     bar(flowExpA_); bar(flowExpB_);
     // 5) synthesise interpolated frame
-    disp(pSynth_, g_scratch.sSynth, levelExtent(extent_, 0));
+    disp(synthP, g_scratch.sSynth, levelExtent(extent_, 0));
 }
 
 // ---- lazy scratch builder ----

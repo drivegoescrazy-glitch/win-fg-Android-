@@ -150,6 +150,8 @@ bool FrameGen::init(const DeviceDispatch* dd, const InstanceDispatch* id,
     if (!buildSetLayout(dd_, dev, {B{0,U},B{1,U},B{32,S},B{48,W},B{49,W}}, pExpand_.setLayout)) return false;
     if (!buildSetLayout(dd_, dev, {B{0,U},B{1,U},B{32,S},B{48,W},B{49,W}}, pExpandM4_.setLayout)) return false;
     if (!buildSetLayout(dd_, dev, {B{0,U},B{32,S},B{33,S},B{34,S},B{35,S},B{48,W}}, pSynth_.setLayout)) return false;
+    // Reprojection back end: identical binding set, so it shares the scratch set.
+    if (!buildSetLayout(dd_, dev, {B{0,U},B{32,S},B{33,S},B{34,S},B{35,S},B{48,W}}, pReproject_.setLayout)) return false;
     // C1: LK-reduce (UBO, SSBO, prev, curr) and curr-luma stabilization prewarp (UBO, src, dst).
     if (!buildSetLayout(dd_, dev, {B{1,U},B{16,SB},B{32,S},B{33,S}}, pGmReduce_.setLayout)) return false;
     if (!buildSetLayout(dd_, dev, {B{1,U},B{32,S},B{48,W}}, pGmPrewarp_.setLayout)) return false;
@@ -167,6 +169,7 @@ bool FrameGen::init(const DeviceDispatch* dd, const InstanceDispatch* id,
     if (!makePipe(pGmPrewarp_, embedded::OF3_GM_PREWARP, unused)) return false;
     if (!makePipe(pFlowReg_,  embedded::OF3_FLOWREG, unused)) return false;
     if (!makePipe(pSynth_,    embedded::WFG_SYNTH, unused)) return false;
+    if (!makePipe(pReproject_, embedded::WFG_REPROJECT, unused)) return false;
     if (!makeGmBuffers()) { WFG_LOGE("framegen: GM SSBO alloc failed — C1 disabled"); }
     WFG_LOGI("framegen init ok (queueFamily=%u, 10 pipelines, model=%d, C1 gm=%d, C2 flow_reg=%d iters=%d)",
              queueFamily_, cfg_.model, cfg_.gmMode, cfg_.frMode, cfg_.frIters);
@@ -248,6 +251,7 @@ void FrameGen::destroy() {
     destroyImage(flowRegA_); destroyImage(flowRegB_);   // C2
     destroyPipe(pLuma_); destroyPipe(pDown_); destroyPipe(pFlow_); destroyPipe(pFlowM4_);
     destroyPipe(pExpand_); destroyPipe(pExpandM4_); destroyPipe(pSynth_);
+    destroyPipe(pReproject_);
     destroyPipe(pGmReduce_); destroyPipe(pGmPrewarp_);
     destroyPipe(pFlowReg_);   // C2
     for (int s = 0; s < kGmSlots; ++s) {

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.winfg.launcher"
-    android:versionCode="13"
-    android:versionName="1.12"
+    android:versionCode="14"
+    android:versionName="1.13"
     android:installLocation="auto">
 
     <!-- targetSdk stays current. Android 12/13 has no single-app MediaProjection,
@@ -10,7 +10,9 @@
          flag; the non-SDK lookup is exempted at runtime (see OverlayService).
          Android 14+ uses the public single-app MediaProjection path. -->
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
-    <!-- versionCode 13: the capture no longer follows the overlay view's transient layout
+    <!-- versionCode 14: a second synthesis back end (occlusion-adaptive reprojection)
+         selectable in Frame generation, and the generated frame is placed at the true
+         temporal midpoint (alpha 0.5) instead of 0.35. versionCode 13: the capture no longer follows the overlay view's transient layout
          size, a watchdog rebuilds whichever side of the pipeline stopped, and the session
          log can be filed from the app. versionCode 12: the renderer no longer releases the AHardwareBuffer it was handed;
          that release stole a reference the Java Image/HardwareBuffer owns and killed the

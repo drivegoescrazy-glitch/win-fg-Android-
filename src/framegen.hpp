@@ -104,6 +104,8 @@ private:
 
     // pipelines
     Pipe pLuma_, pDown_, pFlow_, pFlowM4_, pExpand_, pExpandM4_, pSynth_;
+    // Alternative synthesis back end (config synthMode=1). Same bindings as pSynth_.
+    Pipe pReproject_;
     // C1: LK normal-equation reduce + curr-luma stabilization pre-warp
     Pipe pGmReduce_, pGmPrewarp_;
     // C2: TV-L1 flow-regularization iteration (one dispatch per iteration)

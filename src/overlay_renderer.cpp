@@ -919,7 +919,11 @@ bool Renderer::submit(AHardwareBuffer* buffer, uint64_t timestampNs) {
         barrier(cmd_, generated_.image, VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_GENERAL, 0, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-        fg_.record(cmd_, prev_.view, curr_.view, generated_.view, 0.35f, 0);
+        // alpha = 0.5 places the generated frame at the temporal MIDPOINT between the
+        // two captured frames. 0.35 put it closer to the older frame, leaving gaps of
+        // 0.35 and 0.65 of a frame interval — uneven cadence for no benefit, since the
+        // insert path already paces the pair around the midpoint.
+        fg_.record(cmd_, prev_.view, curr_.view, generated_.view, 0.5f, 0);
         barrier(cmd_, generated_.image, VK_IMAGE_LAYOUT_GENERAL,
                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
@@ -1095,7 +1099,7 @@ Java_com_winfg_launcher_OverlayRenderer_nativeCreate(
         jfloat refreshHz, jboolean frameGen, jstring crashDir,
         jint model, jint multiplier, jint perfPreset, jfloat flowScale,
         jint gmMode, jint frMode, jint frIters, jfloat frLambda, jfloat frDt,
-        jfloat frEdge, jfloat frEps, jint extraImages, jboolean pacing) {
+        jfloat frEdge, jfloat frEps, jint extraImages, jboolean pacing, jint synthMode) {
     if (surface == nullptr || width <= 0 || height <= 0) return 0;
     if (crashDir != nullptr) {
         const char* dir = env->GetStringUTFChars(crashDir, nullptr);
@@ -1126,6 +1130,7 @@ Java_com_winfg_launcher_OverlayRenderer_nativeCreate(
     cfg.frEps = frEps;
     cfg.extraImages = extraImages;
     cfg.pacing = pacing;
+    cfg.synthMode = synthMode;   // 0 = importance blend, 1 = occlusion-adaptive reprojection
     cfg.sanitize();
 
     Renderer* renderer = new Renderer();

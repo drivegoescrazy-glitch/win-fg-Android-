@@ -24,6 +24,8 @@ public final class AppSettings {
     public float frEdge = 8.0f;
     public float frEps = 0.05f;
     public int extraImages = 2;
+    /** Synthesis back end: 0 = importance blend of both warped frames, 1 = reprojection. */
+    public int synthMode = 0;
     public boolean overlay = true;    // legacy preference; overlay now starts automatically
     /** Capture-only overlay, used after the frame-generation renderer crashed natively. */
     public boolean mirrorOnly = false;
@@ -60,6 +62,7 @@ public final class AppSettings {
         s.frDt = p.getFloat("fr_dt", s.frDt);
         s.frEdge = p.getFloat("fr_edge", s.frEdge);
         s.frEps = p.getFloat("fr_eps", s.frEps);
+        s.synthMode = p.getInt("synth_mode", s.synthMode);
         s.extraImages = p.getInt("extra_images", s.extraImages);
         s.overlay = p.getBoolean("overlay", s.overlay);
         s.mirrorOnly = p.getBoolean("mirror_only", s.mirrorOnly);
@@ -82,6 +85,7 @@ public final class AppSettings {
                 .putFloat("fr_dt", frDt)
                 .putFloat("fr_edge", frEdge)
                 .putFloat("fr_eps", frEps)
+                .putInt("synth_mode", synthMode)
                 .putInt("extra_images", extraImages)
                 .putBoolean("overlay", overlay)
                 .putBoolean("mirror_only", mirrorOnly)
@@ -128,6 +132,7 @@ public final class AppSettings {
         b.append(String.format(Locale.US, "fr_dt = %.2f\n", frDt));
         b.append(String.format(Locale.US, "fr_edge = %.1f\n", frEdge));
         b.append(String.format(Locale.US, "fr_eps = %.3f\n", frEps));
+        b.append("synth = ").append(synthMode == 1 ? "reproject" : "interpolate").append('\n');
         return b.toString();
     }
 }

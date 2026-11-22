@@ -506,6 +506,17 @@ public final class MainActivity extends Activity {
             @Override public void onNothingSelected(AdapterView<?> parent) {}
         });
 
+        Spinner synth = f(R.id.spinner_synth);
+        synth.setAdapter(spinnerAdapter(new String[]{"Interpolate", "Reproject"}));
+        synth.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                if (binding || position == settings.synthMode) return;
+                settings.synthMode = position;
+                onSettingChanged();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) {}
+        });
+
         Spinner gm = f(R.id.spinner_gm);
         gm.setAdapter(spinnerAdapter(new String[]{"Auto", "On", "Off"}));
         gm.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -629,6 +640,7 @@ public final class MainActivity extends Activity {
         ((Switch) f(R.id.sw_debug)).setChecked(settings.debug);
 
         ((Spinner) f(R.id.spinner_preset)).setSelection(settings.perfPreset, false);
+        ((Spinner) f(R.id.spinner_synth)).setSelection(settings.synthMode, false);
         ((Spinner) f(R.id.spinner_gm)).setSelection(settings.gmMode, false);
         ((Spinner) f(R.id.spinner_reg)).setSelection(settings.frMode, false);
 

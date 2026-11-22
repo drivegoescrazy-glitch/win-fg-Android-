@@ -1,0 +1,121 @@
+#version 450
+// ─────────────────────────────────────────────────────────────────────────────
+// win-fg — OCCLUSION-ADAPTIVE REPROJECTION synthesis (alternative back end).
+//
+// CLEAN-ROOM STATEMENT
+// Written from first principles for win-fg. No code, weights or constants come
+// from bionic-fg / GameScope / Lossless Scaling / FSR. The technique is the
+// classical "temporal reprojection" family used by VR async time-warp and by
+// engine TAA motion estimation, applied to a two-frame pair.
+//
+// WHAT IS DIFFERENT FROM wfg_synth
+// wfg_synth always BLENDS the two warped real frames with softmax importance
+// weights. That is the right thing where the motion field is coherent, but on a
+// disocclusion (or a wrong vector) the two candidates disagree, and averaging
+// them produces the characteristic double-edge / smear.
+// This back end instead decides PER PIXEL between
+//   * the blended interpolation (when the field is coherent AND both warped
+//     colours agree), and
+//   * a single-frame reprojection of the temporally nearer real frame
+//     (otherwise),
+// and falls back to the unwarped nearer frame where the field carries no
+// usable confidence at all. Reprojection of one frame cannot double an edge,
+// which is the artifact class this mode exists to remove.
+//
+// GEOMETRY / CONVENTIONS (identical to wfg_synth so the host graph is unchanged)
+//   I0 = uPrev (t=0), I1 = uCurr (t=1), generated frame at time = alpha.
+//   uFlowFwd = F10 (curr->prev), .xy px, .w conf
+//   uFlowBwd = F01 (prev->curr), .xy px, .w conf
+// ─────────────────────────────────────────────────────────────────────────────
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0) uniform U {
+    float flowScale;   // scales solved flow magnitude
+    float alpha;       // temporal position, 0=prev .. 1=curr
+    float beta;        // unused here (kept for layout compatibility)
+    float lambda;      // FB-consistency sharpness
+    float epsilon;     // unused here
+    float photoScale;  // photometric-agreement sharpness
+    float pad0;        // unused
+    float pad1;        // unused
+    vec4  hudRect;     // (x0,y0,x1,y1); disabled when x0>=x1
+};
+
+layout(binding = 32) uniform sampler2D uPrev;
+layout(binding = 33) uniform sampler2D uCurr;
+layout(binding = 34) uniform sampler2D uFlowFwd;
+layout(binding = 35) uniform sampler2D uFlowBwd;
+layout(binding = 48, rgba8) uniform writeonly image2D uOut;
+
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+float luma(vec3 c) { return dot(c, LUMA); }
+
+void main() {
+    ivec2 gid = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 dim = imageSize(uOut);
+    if (gid.x >= dim.x || gid.y >= dim.y) return;
+
+    vec2 invDim = 1.0 / vec2(dim);
+    vec2 uv = (vec2(gid) + 0.5) * invDim;
+
+    // HUD/text is never warped (same rule as wfg_synth).
+    if (hudRect.x < hudRect.z && hudRect.y < hudRect.w
+        && float(gid.x) >= hudRect.x && float(gid.x) < hudRect.z
+        && float(gid.y) >= hudRect.y && float(gid.y) < hudRect.w) {
+        imageStore(uOut, gid, vec4(texture(uCurr, uv).rgb, 1.0));
+        return;
+    }
+
+    bool  dbg = flowScale > 3.5;
+    float fs  = dbg ? 1.0 : flowScale;
+
+    vec4 sBwd = texture(uFlowBwd, uv);
+    vec4 sFwd = texture(uFlowFwd, uv);
+    vec2 F01  = sBwd.xy * fs * invDim;
+    vec2 F10  = sFwd.xy * fs * invDim;
+
+    // A vector that saturates this clamp is a failed match; letting it through
+    // melts the frame (same guard as wfg_synth).
+    const float kMaxFlow = 0.10;
+    float m01 = length(F01); if (m01 > kMaxFlow) F01 *= kMaxFlow / m01;
+    float m10 = length(F10); if (m10 > kMaxFlow) F10 *= kMaxFlow / m10;
+
+    float conf = clamp(min(sBwd.w, sFwd.w), 0.0, 1.0);
+
+    // Forward/backward consistency: F01 and F10 must cancel where both are right.
+    vec2  fbResid = F01 + texture(uFlowFwd, uv + F01).xy * fs * invDim;
+    float denom   = length(F01) + length(F10) + 1.5 * invDim.x;
+    float consist = conf * exp(-lambda * length(fbResid) / denom);
+
+    // The two warped hypotheses.
+    vec2 pA = uv - alpha        * F01;
+    vec2 pB = uv - (1.0 - alpha) * F10;
+    vec3 C0 = texture(uPrev, pA).rgb;
+    vec3 C1 = texture(uCurr, pB).rgb;
+
+    // Agreement of the hypotheses: where the field is right they nearly match.
+    float photo = exp(-photoScale * abs(luma(C0) - luma(C1)));
+
+    // Blend, biased by temporal proximity (the nearer frame carries more truth).
+    float tau0  = max(1.0 - alpha, 1e-4);
+    float tau1  = max(alpha,       1e-4);
+    vec3  interp = (C0 * tau0 + C1 * tau1) / (tau0 + tau1);
+
+    // Reprojection of the temporally nearer REAL frame: one source, so it cannot
+    // ghost two edges on top of each other.
+    bool nearPrev = alpha < 0.5;
+    vec3 reproj   = nearPrev ? C0 : C1;
+    vec3 stillRaw = nearPrev ? texture(uPrev, uv).rgb : texture(uCurr, uv).rgb;
+
+    // Trust the blend only when the field is coherent and the hypotheses agree.
+    float w   = clamp(consist * photo, 0.0, 1.0);
+    vec3  col = mix(reproj, interp, w);
+
+    // No usable motion at all (flat region, failed search): warp nothing.
+    float mag   = max(length(F01), length(F10));
+    float trust = clamp(1.0 - mag / kMaxFlow, 0.0, 1.0);
+    float gate  = smoothstep(0.02, 0.25, conf * trust);
+    col = mix(stillRaw, col, gate);
+
+    imageStore(uOut, gid, vec4(col, 1.0));
+}

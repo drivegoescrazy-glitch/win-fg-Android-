@@ -34,7 +34,8 @@ public final class OverlayRenderer {
         try {
             handle = nativeCreate(surface, width, height, refreshHz, frameGen, crashDir,
                     s.model, s.multiplier, s.perfPreset, s.flowScale, s.gmMode, s.frMode,
-                    s.frIters, s.frLambda, s.frDt, s.frEdge, s.frEps, s.extraImages, s.pacing);
+                    s.frIters, s.frLambda, s.frDt, s.frEdge, s.frEps, s.extraImages, s.pacing,
+                    s.synthMode);
         } catch (Throwable t) {
             Log.e(TAG, "nativeCreate failed", t);
             handle = 0;
@@ -71,7 +72,7 @@ public final class OverlayRenderer {
                                             float flowScale, int gmMode, int frMode,
                                             int frIters, float frLambda, float frDt,
                                             float frEdge, float frEps, int extraImages,
-                                            boolean pacing);
+                                            boolean pacing, int synthMode);
 
     private static native int nativeSubmit(long handle, HardwareBuffer buffer, long timestampNs);
 

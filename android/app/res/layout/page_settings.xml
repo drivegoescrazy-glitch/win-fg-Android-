@@ -115,6 +115,18 @@
                 android:paddingRight="4dp"
                 android:popupBackground="@color/surface2" />
 
+            <TextView style="@style/RowTitle" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:text="Frame synthesis" />
+            <TextView style="@style/RowSub" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Interpolate blends both warped frames; reproject uses the nearer frame where the motion is occluded, which removes double edges" />
+            <Spinner
+                android:id="@+id/spinner_synth"
+                android:layout_width="match_parent"
+                android:layout_height="46dp"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/bg_search"
+                android:paddingLeft="4dp"
+                android:paddingRight="4dp"
+                android:popupBackground="@color/surface2" />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

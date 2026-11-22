@@ -48,7 +48,7 @@ Hardware H.264 decoding plus GPU optical flow is required for usable latency.
 bash android/build_apk.sh
 ```
 
-Output: `android/dist/win-fg-v1.12.apk` (versionCode 13), arm64-v8a engine, signed.
+Output: `android/dist/win-fg-v1.13.apk` (versionCode 14), arm64-v8a engine, signed.
 The script is also what CI runs on tags.
 
 ## Release key — do not lose it
@@ -62,6 +62,24 @@ new APK over the old one — no uninstall needed.
 
 Because the key is committed for update continuity, treat it as a project-shared
 release key, not a secret for defending a high-value app store identity.
+
+## Frame synthesis back ends
+
+The engine estimates dense optical flow and then synthesises the in-between
+frame at alpha = 0.5. Two synthesis back ends exist, selectable live in
+**Settings → Frame generation → Frame synthesis** (or `synth = interpolate|reproject`
+in `conf.toml`, `WIN_FG_SYNTH`, system property `winfg.synth`):
+
+- **Interpolate** (`wfg_synth`) — softmax importance blend of both warped frames
+  (photometric residual + forward/backward consistency). The long-standing default.
+- **Reproject** (`wfg_reproject`) — occlusion-adaptive: per pixel it uses the blend
+  only where the field is coherent *and* the two warped colours agree, otherwise it
+  reprojects the temporally nearer real frame, which cannot double an edge on a
+  disocclusion or a bad vector. Falls back to the unwarped nearest frame when the
+  field has no usable confidence.
+
+Both declare the same descriptors, so switching is a pipeline swap with no change
+to flow estimation or to the present path.
 
 ## Crash reports
 

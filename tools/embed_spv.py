@@ -10,6 +10,7 @@ SHADERS = [
     "of3_gm_reduce", "of3_gm_prewarp",   # C1 global-motion pre-warp
     "of3_flowreg",                        # C2 TV-L1 flow regularization
     "wfg_synth",
+    "wfg_reproject",                      # occlusion-adaptive reprojection back end
 ]
 
 def emit(spv_dir: pathlib.Path, out: pathlib.Path):
